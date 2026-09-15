@@ -3,7 +3,7 @@ import re
 from pathlib import Path
 from database.db import get_connection
 
-DB_NAME = os.getenv("railway", "inversion_bi")
+DB_NAME = os.getenv("APP_DATABASE", "inversion_bi")
 
 
 def _validate_name(name):
