@@ -5,10 +5,16 @@ import pymysql
 import os
 import pymysql
 
+import os
+
+import pymysql
+from pymysql.cursors import DictCursor
+
 
 def _base_config(include_database=True):
+
     host = os.getenv("MYSQLHOST")
-    port = os.getenv("MYSQLPORT")
+    port = os.getenv("MYSQLPORT") or "3306"
     user = os.getenv("MYSQLUSER")
     password = os.getenv("MYSQLPASSWORD")
 
@@ -18,13 +24,25 @@ def _base_config(include_database=True):
             "En Railway debe apuntar al servicio MySQL."
         )
 
+    if not user:
+        raise RuntimeError(
+            "MYSQLUSER no está configurado."
+        )
+
+    if not password:
+        raise RuntimeError(
+            "MYSQLPASSWORD no está configurado."
+        )
+
     config = {
         "host": host,
-        "port": int(port or "3306"),
-        "user": user or "root",
-        "password": password or "",
+        "port": int(port),
+        "user": user,
+        "password": password,
         "charset": "utf8mb4",
         "autocommit": True,
+        "cursorclass": DictCursor,
+        "connect_timeout": 10,
     }
 
     if include_database:
@@ -37,6 +55,7 @@ def _base_config(include_database=True):
 
 
 def get_connection(include_database=True):
+
     return pymysql.connect(
         **_base_config(
             include_database=include_database
