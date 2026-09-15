@@ -1,0 +1,15 @@
+.env
+.env.*
+!.env.example
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.log
+*.zip
+*.pbix
+.DS_Store
+models/*.json
+models/*.ubj
+models/*.bin

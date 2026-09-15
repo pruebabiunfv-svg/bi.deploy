@@ -1,0 +1,12 @@
+Mejor Activo =
+VAR T = TOPN(1, Ranking, Ranking[final_score], DESC)
+RETURN MAXX(T, Ranking[ticker])
+
+Mejor Score =
+MAX(Ranking[final_score])
+
+Probabilidad Favorable % =
+MAX(Predictions[probability_favorable]) * 100
+
+Sentimiento Promedio =
+AVERAGE(Ranking[sentiment_score])

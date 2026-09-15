@@ -1,0 +1,14 @@
+RAILWAY LITE - PASOS CORREGIDOS
+
+1) Subir este proyecto a GitHub SIN .env, .venv ni .git embebido.
+2) Crear MySQL en Railway.
+3) Crear/conectar el servicio web (por ejemplo bi.prueba) al repositorio.
+4) Builder: Dockerfile.
+5) Pre-deploy: python -m database.init_db
+6) Custom Start Command: dejar VACIO. Si necesitas override: /app/start.sh
+7) NO definir PORT manualmente en Railway.
+8) Configurar referencias MYSQL* desde el servicio MySQL.
+9) Healthcheck: /api/health
+10) Generar dominio público y probar /api/health.
+11) Crear worker opcional con Dockerfile.worker.
+12) Conectar Power BI usando los archivos de powerbi/.
