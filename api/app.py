@@ -3,6 +3,8 @@ from flask import Flask, jsonify, request
 
 from database.db import fetch_all, fetch_one
 from database.init_db import init_database
+from datetime import date, datetime
+from decimal import Decimal
 
 app = Flask(__name__)
 APP_NAME = os.getenv("APP_NAME", "Business Analytics - Inversiones a Largo Plazo")
@@ -21,8 +23,34 @@ def _guard():
         return None
     return jsonify({"error": "unauthorized"}), 401
 
-from datetime import date, datetime
-from decimal import Decimal
+def json_safe(rows):
+    result = []
+
+    for row in rows:
+        clean = {}
+
+        for key, value in row.items():
+
+            if isinstance(value, Decimal):
+                clean[key] = float(value)
+
+            elif isinstance(value, datetime):
+                clean[key] = value.strftime(
+                    "%Y-%m-%dT%H:%M:%S"
+                )
+
+            elif isinstance(value, date):
+                clean[key] = value.strftime(
+                    "%Y-%m-%d"
+                )
+
+            else:
+                clean[key] = value
+
+        result.append(clean)
+
+    return result
+
 
 
 def serialize_value(value):
@@ -109,53 +137,39 @@ def predictions():
     try:
         rows = fetch_all("""
             SELECT
+                p.id,
                 p.ticker,
-
-                DATE_FORMAT(
-                    p.prediction_date,
-                    '%Y-%m-%d'
-                ) AS prediction_date,
-
+                p.prediction_date,
                 p.horizon_days,
-
-                CAST(
-                    p.probability_favorable AS DOUBLE
-                ) AS probability_favorable,
-
+                p.probability_favorable,
                 p.predicted_class,
                 p.model,
-
-                DATE_FORMAT(
-                    p.created_at,
-                    '%Y-%m-%dT%H:%i:%s'
-                ) AS created_at
-
+                p.created_at
             FROM predictions p
-
-            JOIN (
+            INNER JOIN (
                 SELECT
                     ticker,
                     MAX(id) AS max_id
                 FROM predictions
                 GROUP BY ticker
-            ) x
-                ON x.max_id = p.id
-
+            ) latest
+                ON latest.max_id = p.id
             ORDER BY
                 p.probability_favorable DESC
         """)
 
-        return jsonify(rows)
+        return jsonify(json_safe(rows))
 
     except Exception as exc:
+
         app.logger.exception(
-            "Error consultando predictions"
+            "ERROR /api/predictions"
         )
 
         return jsonify({
             "status": "error",
             "endpoint": "/api/predictions",
-            "message": str(exc)
+            "error": str(exc)
         }), 500
 
 @app.get("/api/sentiment")
