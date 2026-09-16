@@ -1,11 +1,18 @@
 FROM python:3.12-slim
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1
+    PIP_NO_CACHE_DIR=1 \
+    PYTHONPATH=/app
+
 WORKDIR /app
+
 COPY requirements-api.txt requirements-worker.txt ./
+
 RUN pip install --no-cache-dir -r requirements-worker.txt
+
 COPY database ./database
 COPY jobs ./jobs
 COPY ml ./ml
-CMD ["python", "jobs/run_pipeline.py"]
+
+CMD ["python", "-m", "jobs.run_pipeline"]
