@@ -106,21 +106,57 @@ def predictions():
     if denied:
         return denied
 
-    rows = fetch_all("""
-        SELECT
-            id,
-            ticker,
-            prediction_date,
-            prediction_horizon_days AS horizon_days,
-            probability_favorable,
-            predicted_class,
-            model,
-            created_at
-        FROM predictions
-        ORDER BY prediction_date DESC, ticker
-    """)
+    try:
+        rows = fetch_all("""
+            SELECT
+                p.ticker,
 
-    return jsonify(serialize_rows(rows))
+                DATE_FORMAT(
+                    p.prediction_date,
+                    '%Y-%m-%d'
+                ) AS prediction_date,
+
+                p.horizon_days,
+
+                CAST(
+                    p.probability_favorable AS DOUBLE
+                ) AS probability_favorable,
+
+                p.predicted_class,
+                p.model,
+
+                DATE_FORMAT(
+                    p.created_at,
+                    '%Y-%m-%dT%H:%i:%s'
+                ) AS created_at
+
+            FROM predictions p
+
+            JOIN (
+                SELECT
+                    ticker,
+                    MAX(id) AS max_id
+                FROM predictions
+                GROUP BY ticker
+            ) x
+                ON x.max_id = p.id
+
+            ORDER BY
+                p.probability_favorable DESC
+        """)
+
+        return jsonify(rows)
+
+    except Exception as exc:
+        app.logger.exception(
+            "Error consultando predictions"
+        )
+
+        return jsonify({
+            "status": "error",
+            "endpoint": "/api/predictions",
+            "message": str(exc)
+        }), 500
 
 @app.get("/api/sentiment")
 def sentiment():
