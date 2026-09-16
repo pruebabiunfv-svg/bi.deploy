@@ -252,6 +252,188 @@ def train_predict_xgb(ticker):
             cur.execute("INSERT INTO asset_ranking (ticker,probability_score,sentiment_score,final_score,ranking_position) VALUES (%s,%s,%s,%s,0)", (ticker, prob, sentiment, final_score))
     print(f"XGBoost {ticker}: prob={prob:.4f}, score={final_score:.4f}")
 
+def run_backtest(ticker):
+    import numpy as np
+    import xgboost as xgb
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT price_date, close_price
+                FROM market_data
+                WHERE ticker=%s
+                ORDER BY price_date
+                """,
+                (ticker,)
+            )
+            rows = cur.fetchall()
+
+    if len(rows) < max(250, HORIZON + 100):
+        print(
+            f"Backtesting {ticker}: "
+            f"datos insuficientes ({len(rows)})"
+        )
+        return
+
+    dates = [r["price_date"] for r in rows]
+    closes = [
+        float(r["close_price"])
+        for r in rows
+        if r["close_price"] is not None
+    ]
+
+    X, y = _feature_rows(closes, HORIZON)
+
+    if len(X) < 100 or len(set(y)) < 2:
+        print(f"Backtesting {ticker}: muestra insuficiente")
+        return
+
+    split = int(len(X) * 0.80)
+
+    X_train = np.asarray(X[:split], dtype=float)
+    y_train = np.asarray(y[:split], dtype=float)
+
+    X_test = np.asarray(X[split:], dtype=float)
+    y_test = np.asarray(y[split:], dtype=int)
+
+    dtrain = xgb.DMatrix(
+        X_train,
+        label=y_train
+    )
+
+    dtest = xgb.DMatrix(X_test)
+
+    model = xgb.train(
+        {
+            "objective": "binary:logistic",
+            "eval_metric": "logloss",
+            "max_depth": 3,
+            "eta": 0.08,
+            "subsample": 0.9,
+        },
+        dtrain,
+        num_boost_round=120,
+        verbose_eval=False,
+    )
+
+    probabilities = model.predict(dtest)
+
+    predictions = [
+        1 if p >= 0.5 else 0
+        for p in probabilities
+    ]
+
+    correct = sum(
+        int(p == real)
+        for p, real in zip(predictions, y_test)
+    )
+
+    hit_rate = correct / len(y_test)
+
+    # Periodo aproximado correspondiente al test
+    first_index = 21 + split
+
+    start_index = min(
+        first_index,
+        len(dates) - 1
+    )
+
+    end_index = min(
+        first_index + len(y_test),
+        len(dates) - 1
+    )
+
+    start_date = dates[start_index]
+    end_date = dates[end_index]
+
+    start_price = closes[start_index]
+    end_price = closes[end_index]
+
+    benchmark_return = (
+        end_price / start_price
+    ) - 1.0
+
+    # Estrategia simplificada:
+    # participa en el mercado cuando XGBoost predice favorable
+    strategy_returns = []
+
+    for j, signal in enumerate(predictions):
+        if signal != 1:
+            continue
+
+        idx = first_index + j
+
+        future_idx = idx + HORIZON
+
+        if future_idx >= len(closes):
+            continue
+
+        entry = closes[idx]
+        exit_price = closes[future_idx]
+
+        if entry > 0:
+            strategy_returns.append(
+                (exit_price / entry) - 1.0
+            )
+
+    if strategy_returns:
+        total_return = 1.0
+
+        for r in strategy_returns:
+            total_return *= 1.0 + r
+
+        total_return -= 1.0
+    else:
+        total_return = 0.0
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+
+            # Evita acumular duplicados del mismo periodo
+            cur.execute(
+                """
+                DELETE FROM backtesting
+                WHERE ticker=%s
+                  AND start_date=%s
+                  AND end_date=%s
+                """,
+                (
+                    ticker,
+                    start_date,
+                    end_date
+                )
+            )
+
+            cur.execute(
+                """
+                INSERT INTO backtesting
+                (
+                    ticker,
+                    start_date,
+                    end_date,
+                    total_return,
+                    benchmark_return,
+                    hit_rate
+                )
+                VALUES (%s,%s,%s,%s,%s,%s)
+                """,
+                (
+                    ticker,
+                    start_date,
+                    end_date,
+                    total_return,
+                    benchmark_return,
+                    hit_rate
+                )
+            )
+
+    print(
+        f"Backtesting {ticker}: "
+        f"return={total_return:.4f}, "
+        f"benchmark={benchmark_return:.4f}, "
+        f"hit_rate={hit_rate:.4f}"
+    )
 
 def update_ranks():
     with get_connection() as conn:
@@ -291,6 +473,11 @@ def main():
             train_predict_xgb(ticker)
         except Exception as exc:
             print(f"XGBoost {ticker} ERROR: {exc}")
+        try:
+            run_backtest(ticker)
+        except Exception as exc:
+            print(f"Backtesting {ticker} ERROR: {exc}")
+
         time.sleep(0.2)
     update_ranks()
     print("Pipeline finalizado")
