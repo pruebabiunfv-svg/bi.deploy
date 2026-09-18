@@ -1,58 +1,97 @@
-# Despliegue en Railway — versión Lite corregida
+# Railway - despliegue completo
 
 ## Servicios
-- `bi.prueba`: API Flask + Gunicorn usando `Dockerfile`
-- `MySQL`: base administrada de Railway
-- `inversion-worker` (opcional): ETL/XGBoost usando `Dockerfile.worker`
 
-## 1. Variables del servicio `bi.prueba`
-Configúralas en Railway > `bi.prueba` > Variables. No subas `.env` a GitHub.
+- `MySQL`: persistencia.
+- `bi.deploy`: API Flask/Gunicorn.
+- `inversion-worker`: ETL, FinBERT, XGBoost, Walk-Forward, Backtesting, Decision Engine y Gemini.
+
+## MySQL
+
+Variables referenciadas recomendadas:
 
 ```env
-FLASK_ENV=production
-APP_NAME=Business Analytics - Inversiones a Largo Plazo
-DEMO_MODE=false
-PREDICTION_HORIZON_DAYS=126
-TICKERS=AAPL,MSFT,NVDA,AMZN,GOOGL,SPY,QQQ
-MARKET_PERIOD=5y
 APP_DATABASE=inversion_bi
-MYSQLHOST=${{MySQL.MYSQLHOST}}
-MYSQLPORT=${{MySQL.MYSQLPORT}}
-MYSQLUSER=${{MySQL.MYSQLUSER}}
-MYSQLPASSWORD=${{MySQL.MYSQLPASSWORD}}
-PBI_API_KEY=CAMBIAR_POR_UNA_CLAVE_SEGURA
+MYSQLHOST=${{MySQL.RAILWAY_PRIVATE_DOMAIN}}
+MYSQLPORT=3306
+MYSQLUSER=root
+MYSQLPASSWORD=${{MySQL.MYSQL_ROOT_PASSWORD}}
 ```
 
-No definas `PORT` manualmente en Railway. Railway lo inyecta al iniciar el servicio.
+La base `inversion_bi` persiste entre redeploys mientras no se elimine el servicio/volumen MySQL ni se ejecuten DROP/TRUNCATE.
 
-## 2. Settings de `bi.prueba`
-- Builder: Dockerfile
-- Dockerfile: `Dockerfile`
-- Pre-deploy Command: `python -m database.init_db`
-- Custom Start Command: **vacío**
-  - Si Railway obliga a usar uno, usa solamente: `/app/start.sh`
-- Healthcheck Path: `/api/health`
-- Public Networking: habilitado
+## bi.deploy
 
-`start.sh` toma `PORT` de Railway y arranca Gunicorn. No uses expresiones `${PORT:-5000}` directamente en el Custom Start Command de un servicio Dockerfile.
+- Source: mismo repositorio GitHub.
+- Dockerfile: `Dockerfile`.
+- Pre-deploy: `python -m database.init_db`.
+- Custom Start Command: vacío.
+- Healthcheck: `/api/health`.
+- Public Networking: habilitado.
 
-## 3. Base de datos
-El pre-deploy ejecuta:
-
-```bash
-python -m database.init_db
-```
-
-y crea/verifica `inversion_bi` y sus tablas mediante la red privada de Railway.
-
-## 4. Worker
-Crea un segundo servicio desde el mismo repositorio y usa:
+Variables:
 
 ```env
-RAILWAY_DOCKERFILE_PATH=Dockerfile.worker
+APP_NAME=Business Analytics - Inversiones a Largo Plazo
+APP_DATABASE=inversion_bi
+MYSQLHOST=${{MySQL.RAILWAY_PRIVATE_DOMAIN}}
+MYSQLPORT=3306
+MYSQLUSER=root
+MYSQLPASSWORD=${{MySQL.MYSQL_ROOT_PASSWORD}}
+PUBLIC_ANALYTICS=true
+PBI_API_KEY=
 ```
 
-Copia las variables MySQL y agrega las credenciales externas necesarias (FRED/Hugging Face/etc.) solo en Variables de Railway.
+Cuando `PUBLIC_ANALYTICS=true`, los endpoints analíticos son públicos y solo lectura. No se expone MySQL.
 
-## 5. Power BI
-Usa `powerbi/PowerQuery_Ranking.m` y `powerbi/PowerQuery_Predictions.m`, sustituyendo `https://TU-API.up.railway.app` por el dominio de `bi.prueba`.
+## inversion-worker
+
+- Source: mismo repositorio.
+- Variable: `RAILWAY_DOCKERFILE_PATH=Dockerfile.worker`.
+- Pre-deploy: vacío.
+- Custom Start: vacío.
+- No necesita dominio público.
+
+Variables:
+
+```env
+APP_DATABASE=inversion_bi
+MYSQLHOST=${{MySQL.RAILWAY_PRIVATE_DOMAIN}}
+MYSQLPORT=3306
+MYSQLUSER=root
+MYSQLPASSWORD=${{MySQL.MYSQL_ROOT_PASSWORD}}
+TICKERS=AAPL,MSFT,NVDA,AMZN,GOOGL,SPY,QQQ
+MARKET_PERIOD=10y
+PREDICTION_HORIZON_DAYS=126
+NEWS_PER_TICKER=25
+WALK_FORWARD_FOLDS=4
+FRED_API_KEY=...
+SEC_USER_AGENT=ProyectoUniversitario/1.0 correo@example.com
+HF_TOKEN=...
+HF_MODEL=ProsusAI/finbert
+HF_API_BASE=https://router.huggingface.co/hf-inference/models
+GEMINI_API_KEY=...
+GEMINI_MODEL=gemini-3.8-flash
+```
+
+El contenedor ejecuta `python -m jobs.run_pipeline`.
+
+## Orden del pipeline
+
+1. Inicialización/migración de BD.
+2. Yahoo Finance.
+3. FRED.
+4. SEC EDGAR.
+5. GDELT + FinBERT.
+6. XGBoost + prediction_history.
+7. Walk-Forward + model_metrics.
+8. Backtesting + Maximum Drawdown.
+9. Ranking.
+10. Decision Engine.
+11. Gemini Agent.
+
+Gemini falla de forma aislada: si la API no está disponible, el worker conserva los resultados cuantitativos.
+
+## Power BI
+
+Con `PUBLIC_ANALYTICS=true`, elegir autenticación `Anónimo` y usar los archivos `powerbi/PowerQuery_*.m`.

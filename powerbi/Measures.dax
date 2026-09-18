@@ -1,12 +1,65 @@
+-- KPI 1: activo mejor puntuado por el motor de decisión
 Mejor Activo =
-VAR T = TOPN(1, Ranking, Ranking[final_score], DESC)
-RETURN MAXX(T, Ranking[ticker])
+VAR Mejor = TOPN(1, Decisions, Decisions[final_score], DESC, Decisions[ticker], ASC)
+RETURN MAXX(Mejor, Decisions[ticker])
 
-Mejor Score =
-MAX(Ranking[final_score])
+Score Final IA =
+VAR Activo = [Mejor Activo]
+RETURN CALCULATE(MAX(Decisions[final_score]), Decisions[ticker] = Activo)
 
-Probabilidad Favorable % =
-MAX(Predictions[probability_favorable]) * 100
+Decision IA =
+VAR Activo = [Mejor Activo]
+RETURN CALCULATE(MAX(Decisions[decision_label]), Decisions[ticker] = Activo)
 
-Sentimiento Promedio =
-AVERAGE(Ranking[sentiment_score])
+-- KPI 2
+Probabilidad Favorable =
+VAR Activo = [Mejor Activo]
+RETURN CALCULATE(MAX(Predictions[probability_favorable]), Predictions[ticker] = Activo)
+
+-- KPI 3
+Score Sentimiento =
+VAR Activo = [Mejor Activo]
+RETURN CALCULATE(MAX(Sentiment[sentiment_score]), Sentiment[ticker] = Activo)
+
+-- KPI 4
+Rentabilidad Backtesting =
+VAR Activo = [Mejor Activo]
+RETURN CALCULATE(MAX(Backtesting[total_return]), Backtesting[ticker] = Activo)
+
+-- KPI 5: se almacena como magnitud positiva de la caída máxima
+Maximum Drawdown =
+VAR Activo = [Mejor Activo]
+RETURN CALCULATE(MAX(Backtesting[max_drawdown]), Backtesting[ticker] = Activo)
+
+Hit Rate Backtesting =
+VAR Activo = [Mejor Activo]
+RETURN CALCULATE(MAX(Backtesting[hit_rate]), Backtesting[ticker] = Activo)
+
+-- KPI 6: usar Decisions[ticker] + Decisions[final_score] en barras horizontales.
+
+-- KPI 7: usar MarketHistory[price_date] + MarketHistory[close_price] en gráfico de línea.
+
+-- KPI 8
+Nivel Confianza Modelo =
+VAR Activo = [Mejor Activo]
+RETURN CALCULATE(MAX(ModelMetrics[roc_auc]), ModelMetrics[ticker] = Activo)
+
+F1 Modelo =
+VAR Activo = [Mejor Activo]
+RETURN CALCULATE(MAX(ModelMetrics[f1_score]), ModelMetrics[ticker] = Activo)
+
+Comentario IA =
+VAR Activo = [Mejor Activo]
+RETURN CALCULATE(MAX(AIComment[model_comment]), AIComment[ticker] = Activo)
+
+Explicacion IA =
+VAR Activo = [Mejor Activo]
+VAR Motivo = CALCULATE(MAX(AIComment[main_reason]), AIComment[ticker] = Activo)
+VAR Positivo = CALCULATE(MAX(AIComment[positive_factors]), AIComment[ticker] = Activo)
+VAR Riesgo = CALCULATE(MAX(AIComment[risk_factors]), AIComment[ticker] = Activo)
+RETURN
+    "Motivo: " & COALESCE(Motivo, "Sin comentario Gemini")
+    & UNICHAR(10) & UNICHAR(10)
+    & "Factores favorables: " & COALESCE(Positivo, "-")
+    & UNICHAR(10) & UNICHAR(10)
+    & "Riesgos: " & COALESCE(Riesgo, "-")

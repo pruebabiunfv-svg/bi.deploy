@@ -1,14 +1,55 @@
-RAILWAY LITE - PASOS CORREGIDOS
+PROYECTO BI + IA + GEMINI - QUICKSTART
 
-1) Subir este proyecto a GitHub SIN .env, .venv ni .git embebido.
-2) Crear MySQL en Railway.
-3) Crear/conectar el servicio web (por ejemplo bi.prueba) al repositorio.
-4) Builder: Dockerfile.
-5) Pre-deploy: python -m database.init_db
-6) Custom Start Command: dejar VACIO. Si necesitas override: /app/start.sh
-7) NO definir PORT manualmente en Railway.
-8) Configurar referencias MYSQL* desde el servicio MySQL.
-9) Healthcheck: /api/health
-10) Generar dominio público y probar /api/health.
-11) Crear worker opcional con Dockerfile.worker.
-12) Conectar Power BI usando los archivos de powerbi/.
+1) GitHub
+   Subir esta carpeta completa sin .env ni secretos.
+
+2) Railway MySQL
+   Mantener el servicio MySQL existente.
+
+3) API bi.deploy
+   Dockerfile: Dockerfile
+   Pre-deploy: python -m database.init_db
+   Custom Start: VACIO
+   PUBLIC_ANALYTICS=true
+
+4) Worker inversion-worker
+   RAILWAY_DOCKERFILE_PATH=Dockerfile.worker
+   Custom Start: VACIO
+   Pre-deploy: VACIO
+
+5) Variables worker
+   MARKET_PERIOD=10y
+   NEWS_PER_TICKER=25
+   WALK_FORWARD_FOLDS=4
+   PREDICTION_HORIZON_DAYS=126
+   FRED_API_KEY=...
+   HF_TOKEN=...
+   GEMINI_API_KEY=...
+   GEMINI_MODEL=gemini-3.8-flash
+
+6) Ejecutar/redeploy worker
+   El pipeline crea/carga:
+   market_data -> sentiment -> predictions -> prediction_history
+   -> model_metrics -> backtesting -> ranking -> decision_log
+   -> ai_decision_comment
+
+7) Comprobar MySQL
+   SELECT COUNT(*) FROM inversion_bi.market_data;
+   SELECT COUNT(*) FROM inversion_bi.prediction_history;
+   SELECT COUNT(*) FROM inversion_bi.backtesting;
+   SELECT COUNT(*) FROM inversion_bi.model_metrics;
+   SELECT COUNT(*) FROM inversion_bi.decision_log;
+   SELECT COUNT(*) FROM inversion_bi.ai_decision_comment;
+
+8) Probar API
+   /api/predictions
+   /api/backtesting
+   /api/model-metrics
+   /api/decisions
+   /api/ai-comment
+
+9) Power BI
+   Copiar consultas de powerbi/*.m.
+   Sustituir TU-API por el dominio Railway.
+   Seleccionar autenticación Anónimo cuando PUBLIC_ANALYTICS=true.
+   Copiar powerbi/Measures.dax.
