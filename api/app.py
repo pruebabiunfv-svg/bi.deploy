@@ -77,6 +77,9 @@ def root():
                 "/api/market-history",
                 "/api/decisions",
                 "/api/ai-comment",
+                "/api/dashboard/assets",
+                "/api/dashboard/recommendation",
+                "/api/dashboard/runs",
             ],
         }
     )
@@ -294,21 +297,76 @@ def decisions():
 
 @app.get("/api/ai-comment")
 def ai_comment():
+    """Compatibilidad: devuelve la recomendación Gemini del mejor activo del último run."""
     denied = _analytics_guard()
     if denied:
         return denied
     return _json_rows(
         """
-        SELECT c.id,c.ticker,c.decision_id,c.decision_label,c.final_score,
-               c.summary,c.main_reason,c.positive_factors,c.risk_factors,
-               c.model_comment,c.model_name,c.created_at
-        FROM ai_decision_comment c
+        SELECT a.id,a.ticker,NULL AS decision_id,a.decision_label,a.final_score,
+               a.summary,a.main_reason,a.positive_factors,a.risk_factors,
+               a.model_comment,a.model_name,a.created_at
+        FROM ai_recommendation a
         INNER JOIN (
-            SELECT ticker, MAX(id) AS max_id
-            FROM ai_decision_comment
-            GROUP BY ticker
-        ) latest ON latest.max_id=c.id
-        ORDER BY c.final_score DESC
+            SELECT MAX(id) AS run_id
+            FROM analysis_runs
+            WHERE status IN ('COMPLETED','COMPLETED_WITH_WARNINGS')
+        ) r ON r.run_id=a.run_id
+        """
+    )
+
+
+@app.get("/api/dashboard/assets")
+def dashboard_assets():
+    """Fuente semántica principal de Power BI: una fila por activo en la última ejecución válida."""
+    denied = _analytics_guard()
+    if denied:
+        return denied
+    return _json_rows(
+        """
+        SELECT s.*
+        FROM asset_kpi_snapshot s
+        INNER JOIN (
+            SELECT MAX(id) AS run_id
+            FROM analysis_runs
+            WHERE status IN ('COMPLETED','COMPLETED_WITH_WARNINGS')
+        ) r ON r.run_id=s.run_id
+        ORDER BY s.ranking_position ASC, s.ticker ASC
+        """
+    )
+
+
+@app.get("/api/dashboard/recommendation")
+def dashboard_recommendation():
+    """Explicación Gemini exclusivamente del mejor activo del mismo run del dashboard."""
+    denied = _analytics_guard()
+    if denied:
+        return denied
+    return _json_rows(
+        """
+        SELECT a.*
+        FROM ai_recommendation a
+        INNER JOIN (
+            SELECT MAX(id) AS run_id
+            FROM analysis_runs
+            WHERE status IN ('COMPLETED','COMPLETED_WITH_WARNINGS')
+        ) r ON r.run_id=a.run_id
+        """
+    )
+
+
+@app.get("/api/dashboard/runs")
+def dashboard_runs():
+    denied = _analytics_guard()
+    if denied:
+        return denied
+    return _json_rows(
+        """
+        SELECT id,started_at,completed_at,status,market_period,horizon_days,
+               model_version,total_assets,notes
+        FROM analysis_runs
+        ORDER BY id DESC
+        LIMIT 50
         """
     )
 

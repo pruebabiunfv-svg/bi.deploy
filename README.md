@@ -1,61 +1,81 @@
-# Sistema BI de Inversión + XGBoost + FinBERT + Walk-Forward + Gemini
+# Sistema BI de Inversión V2 — KPI coherentes por empresa + Gemini
 
-Versión integrada para Railway, MySQL y Power BI.
+Esta versión corrige el problema de Power BI donde **Mejor activo**, **Ranking**, **Sentimiento**, **Backtesting** y otros KPI podían provenir de tickers o ejecuciones diferentes.
 
-## Flujo
+## Cambio principal
 
-1. Yahoo Finance -> histórico de mercado (10 años por defecto).
-2. FRED -> indicadores macroeconómicos.
-3. SEC EDGAR -> fundamentales.
-4. GDELT -> noticias financieras.
-5. FinBERT (Hugging Face Inference) -> sentimiento.
-6. XGBoost -> probabilidad de rendimiento favorable.
-7. Walk-Forward Validation -> Accuracy, Precision, Recall, F1 y ROC-AUC.
-8. Backtesting -> rentabilidad, benchmark, hit rate y Maximum Drawdown.
-9. Decision Engine -> score final y clasificación académica.
-10. Gemini Agent -> explica por qué el motor eligió esa clasificación.
-11. Flask REST API -> endpoints para Power BI.
+Cada ejecución del worker crea un `run_id` en `analysis_runs`. Al finalizar los modelos, se genera `asset_kpi_snapshot`, con **una fila consolidada por activo y por ejecución**. Esa tabla es la fuente principal del dashboard.
 
-## KPI incluidos
+Flujo:
 
-- Mejor activo del modelo: `decision_log.final_score`.
-- Probabilidad favorable: `predictions.probability_favorable`.
-- Sentimiento: `sentiment.sentiment_score`.
-- Rentabilidad de backtesting: `backtesting.total_return`.
-- Maximum Drawdown: `backtesting.max_drawdown`.
-- Ranking: `decision_log.final_score` / `asset_ranking`.
-- Rendimiento histórico: `market_data.close_price` por fecha.
-- Confianza del modelo: `model_metrics.roc_auc` (Walk-Forward).
-- Comentario IA: `ai_decision_comment.model_comment`.
+```text
+APIs -> tablas RAW/normalizadas -> XGBoost/FinBERT -> Walk-Forward/Backtesting
+     -> Decision Engine -> asset_kpi_snapshot -> Power BI
+                                      |
+                                      -> mejor final_score -> Gemini -> ai_recommendation
+```
 
-## Históricos adicionales
+## Tablas nuevas / mejoradas
 
-Cada ejecución del worker conserva nuevos registros en:
+- `analysis_runs`: identifica cada ejecución completa.
+- `api_raw_payload`: conserva JSON original de Yahoo, FRED, SEC y GDELT para auditoría.
+- `sec_company_facts`: almacena conceptos XBRL de SEC con mayor granularidad.
+- `asset_kpi_snapshot`: una fila por empresa con todos los KPI de la misma ejecución.
+- `ai_recommendation`: comentario Gemini **solo del mejor activo** del mismo run.
+- `market_data`: agrega `adj_close`, `currency`, `exchange_name`.
+- `economic_indicators`: agrega metadatos FRED (`realtime_*`, `units`, `frequency`).
+- `financial_news`: agrega metadatos GDELT (`domain`, `language`, `source_country`, `social_image`, `seen_at`).
+- históricos ML (`prediction_history`, `backtesting`, `model_metrics`, `asset_ranking`, `decision_log`) incluyen `run_id`.
 
-- `prediction_history`
-- `asset_ranking`
-- `backtesting`
-- `model_metrics`
-- `decision_log`
-- `ai_decision_comment` (una explicación por decisión)
+## Regla de consistencia
 
-`market_data`, FRED y fundamentales usan actualización por clave para evitar duplicados. GDELT comprueba URL/título antes de insertar una noticia.
+El orden final se calcula exclusivamente con:
+
+```text
+asset_kpi_snapshot.final_score DESC
+```
+
+Por tanto:
+
+```text
+ranking_position = 1 <=> is_best = 1 <=> Mejor Activo IA
+```
+
+Gemini **no vuelve a elegir** el activo. Lee todos los activos del mismo `run_id` y explica por qué el #1 quedó por encima del resto.
+
+## Power BI recomendado
+
+Use principalmente:
+
+- `/api/dashboard/assets` -> consulta `DashboardAssets`
+- `/api/dashboard/recommendation` -> `AIRecommendation`
+- `/api/market-history` -> `MarketHistory`
+- `/api/dashboard/runs` -> opcional, auditoría
+
+Los endpoints anteriores se conservan para auditoría/compatibilidad, pero no deben mezclarse para construir las tarjetas actuales.
+
+En `powerbi/`:
+
+- `PowerQuery_DashboardAssets.m`
+- `PowerQuery_AIRecommendation.m`
+- `PowerQuery_MarketHistory.m`
+- `PowerQuery_AnalysisRuns.m`
+- `Measures.dax`
+
+`Measures.dax` incluye `DimActivo`, medidas por empresa seleccionada y medidas globales del mejor activo.
+
+### Modelo
+
+```text
+DimActivo[Ticker] 1 -> * DashboardAssets[ticker]
+DimActivo[Ticker] 1 -> * MarketHistory[ticker]
+```
+
+Use `DimActivo[Empresa]` como slicer. Cuando seleccione Microsoft, todos los KPI de empresa mostrarán Microsoft. El panel global de IA seguirá mostrando el mejor activo del sistema.
 
 ## Railway
 
-### API (`bi.deploy`)
-
-Usa `Dockerfile`.
-
-Pre-deploy:
-
-```bash
-python -m database.init_db
-```
-
-Custom Start Command: vacío.
-
-Variables mínimas:
+### API `bi.deploy`
 
 ```env
 APP_DATABASE=inversion_bi
@@ -66,17 +86,16 @@ MYSQLPASSWORD=${{MySQL.MYSQL_ROOT_PASSWORD}}
 PUBLIC_ANALYTICS=true
 ```
 
-### Worker (`inversion-worker`)
+Pre-deploy:
 
-Usa:
+```bash
+python -m database.init_db
+```
+
+### Worker `inversion_worker`
 
 ```env
 RAILWAY_DOCKERFILE_PATH=Dockerfile.worker
-```
-
-Variables sugeridas:
-
-```env
 APP_DATABASE=inversion_bi
 MYSQLHOST=${{MySQL.RAILWAY_PRIVATE_DOMAIN}}
 MYSQLPORT=3306
@@ -88,46 +107,23 @@ MARKET_PERIOD=10y
 PREDICTION_HORIZON_DAYS=126
 NEWS_PER_TICKER=25
 WALK_FORWARD_FOLDS=4
+GDELT_DELAY_SECONDS=3
 
 FRED_API_KEY=...
 SEC_USER_AGENT=ProyectoUniversitario/1.0 correo@example.com
 HF_TOKEN=...
 HF_MODEL=ProsusAI/finbert
 HF_API_BASE=https://router.huggingface.co/hf-inference/models
-
 GEMINI_API_KEY=...
 GEMINI_MODEL=gemini-3.8-flash
 ```
 
-El `Dockerfile.worker` ejecuta:
+El pipeline ahora controla 429 de GDELT con reintentos y espera configurable.
 
-```bash
-python -m jobs.run_pipeline
-```
+## Validación
 
-## API para Power BI
-
-Con `PUBLIC_ANALYTICS=true`, estos endpoints son de lectura anónima:
-
-- `/api/ranking`
-- `/api/predictions`
-- `/api/prediction-history`
-- `/api/sentiment`
-- `/api/backtesting`
-- `/api/model-metrics`
-- `/api/market-history`
-- `/api/decisions`
-- `/api/ai-comment`
-
-`/api/database/health` sigue protegido por `PBI_API_KEY` si se configura.
-
-En `powerbi/` hay consultas M para cada tabla y `Measures.dax` con los KPI.
-Reemplaza `https://TU-API.up.railway.app` por tu dominio Railway.
+Después del deploy ejecute `docs/SQL_VERIFY_KPI.sql`. Debe existir exactamente un `is_best=1` en el último run y `ai_recommendation.ticker` debe coincidir con ese ticker.
 
 ## Seguridad
 
-No subas claves reales a GitHub. Configura FRED, Hugging Face, Gemini y MySQL únicamente como Railway Variables. Si una clave fue expuesta en una captura o chat, rótala antes del despliegue.
-
-## Nota académica
-
-El `Decision Engine` y Gemini se plantean como apoyo analítico y explicación del modelo. Gemini no recalcula las métricas ni modifica el score cuantitativo.
+No incluya claves reales en GitHub. Mantenga las credenciales en Railway Variables y rote cualquier clave que se haya expuesto previamente.

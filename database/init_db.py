@@ -6,6 +6,16 @@ from database.db import get_connection
 
 DB_NAME = os.getenv("APP_DATABASE", "inversion_bi")
 
+COMPANY_NAMES = {
+    "AAPL": "Apple Inc.",
+    "MSFT": "Microsoft Corporation",
+    "NVDA": "NVIDIA Corporation",
+    "AMZN": "Amazon.com, Inc.",
+    "GOOGL": "Alphabet Inc.",
+    "SPY": "SPDR S&P 500 ETF Trust",
+    "QQQ": "Invesco QQQ Trust",
+}
+
 
 def _validate_name(name):
     if not re.fullmatch(r"[A-Za-z0-9_]+", name):
@@ -40,20 +50,38 @@ def _column_exists(cur, table_name, column_name):
     return int(cur.fetchone()["n"]) > 0
 
 
+def _add_column(cur, table, column, ddl):
+    if not _column_exists(cur, table, column):
+        cur.execute(f"ALTER TABLE `{table}` ADD COLUMN {ddl}")
+
+
 def apply_migrations():
-    """Cambios idempotentes para instalaciones que ya tenían la versión anterior."""
+    """Migración idempotente desde versiones anteriores del proyecto."""
     with get_connection() as conn:
         with conn.cursor() as cur:
-            if not _column_exists(cur, "backtesting", "max_drawdown"):
-                cur.execute(
-                    "ALTER TABLE backtesting "
-                    "ADD COLUMN max_drawdown DECIMAL(12,6) NULL AFTER benchmark_return"
-                )
-            if not _column_exists(cur, "backtesting", "trades_count"):
-                cur.execute(
-                    "ALTER TABLE backtesting "
-                    "ADD COLUMN trades_count INT NOT NULL DEFAULT 0 AFTER hit_rate"
-                )
+            _add_column(cur, "market_data", "adj_close", "adj_close DECIMAL(18,6) NULL AFTER close_price")
+            _add_column(cur, "market_data", "currency", "currency VARCHAR(10) NULL AFTER volume")
+            _add_column(cur, "market_data", "exchange_name", "exchange_name VARCHAR(80) NULL AFTER currency")
+
+            _add_column(cur, "economic_indicators", "realtime_start", "realtime_start DATE NULL AFTER value")
+            _add_column(cur, "economic_indicators", "realtime_end", "realtime_end DATE NULL AFTER realtime_start")
+            _add_column(cur, "economic_indicators", "units", "units VARCHAR(80) NULL AFTER realtime_end")
+            _add_column(cur, "economic_indicators", "frequency", "frequency VARCHAR(80) NULL AFTER units")
+
+            for col, ddl in [
+                ("domain", "domain VARCHAR(255) NULL AFTER source"),
+                ("language", "language VARCHAR(50) NULL AFTER domain"),
+                ("source_country", "source_country VARCHAR(100) NULL AFTER language"),
+                ("social_image", "social_image VARCHAR(1500) NULL AFTER source_country"),
+                ("seen_at", "seen_at DATETIME NULL AFTER social_image"),
+            ]:
+                _add_column(cur, "financial_news", col, ddl)
+
+            for table in ["prediction_history", "backtesting", "model_metrics", "asset_ranking", "decision_log", "ai_decision_comment"]:
+                _add_column(cur, table, "run_id", "run_id BIGINT NULL AFTER id")
+
+            _add_column(cur, "backtesting", "max_drawdown", "max_drawdown DECIMAL(12,6) NULL AFTER benchmark_return")
+            _add_column(cur, "backtesting", "trades_count", "trades_count INT NOT NULL DEFAULT 0 AFTER hit_rate")
 
 
 def seed_assets():
@@ -66,10 +94,17 @@ def seed_assets():
         with conn.cursor() as cur:
             for ticker in tickers:
                 asset_type = "ETF" if ticker in {"SPY", "QQQ"} else "STOCK"
+                company_name = COMPANY_NAMES.get(ticker, ticker)
                 cur.execute(
-                    "INSERT INTO assets (ticker, asset_type) VALUES (%s,%s) "
-                    "ON DUPLICATE KEY UPDATE active=1",
-                    (ticker, asset_type),
+                    """
+                    INSERT INTO assets (ticker, company_name, asset_type)
+                    VALUES (%s,%s,%s)
+                    ON DUPLICATE KEY UPDATE
+                        company_name=VALUES(company_name),
+                        asset_type=VALUES(asset_type),
+                        active=1
+                    """,
+                    (ticker, company_name, asset_type),
                 )
 
 

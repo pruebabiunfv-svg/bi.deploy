@@ -1,4 +1,5 @@
 import datetime as dt
+import hashlib
 import math
 import os
 import statistics
@@ -8,6 +9,7 @@ from urllib.parse import quote
 import requests
 
 from database.db import get_connection
+from database.audit import finish_analysis_run, save_raw_payload, start_analysis_run
 from database.init_db import init_database
 from ml.hf_client import analyze_sentiment
 from ml.validation import classification_metrics, walk_forward_splits
@@ -23,6 +25,8 @@ FRED_KEY = os.getenv("FRED_API_KEY", "")
 SEC_UA = os.getenv("SEC_USER_AGENT", "BusinessAnalytics/1.0 contact@example.com")
 NEWS_PER_TICKER = int(os.getenv("NEWS_PER_TICKER", "25"))
 WALK_FORWARD_FOLDS = int(os.getenv("WALK_FORWARD_FOLDS", "4"))
+GDELT_DELAY_SECONDS = float(os.getenv("GDELT_DELAY_SECONDS", "3"))
+CURRENT_RUN_ID = None
 
 CIK = {
     "AAPL": "0000320193",
@@ -30,6 +34,17 @@ CIK = {
     "NVDA": "0001045810",
     "AMZN": "0001018724",
     "GOOGL": "0001652044",
+}
+
+
+COMPANY_NAMES = {
+    "AAPL": "Apple Inc.",
+    "MSFT": "Microsoft Corporation",
+    "NVDA": "NVIDIA Corporation",
+    "AMZN": "Amazon.com, Inc.",
+    "GOOGL": "Alphabet Inc.",
+    "SPY": "SPDR S&P 500 ETF Trust",
+    "QQQ": "Invesco QQQ Trust",
 }
 
 COMPANY_QUERY = {
@@ -52,32 +67,48 @@ def _safe_float(value):
 
 
 def load_yahoo(ticker):
-    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
+    endpoint = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
+    params = {"range": MARKET_PERIOD, "interval": "1d", "events": "history"}
     response = requests.get(
-        url,
-        params={"range": MARKET_PERIOD, "interval": "1d", "events": "history"},
+        endpoint,
+        params=params,
         headers={"User-Agent": "Mozilla/5.0"},
         timeout=30,
     )
     response.raise_for_status()
-    payload = response.json()["chart"]["result"][0]
+    full_payload = response.json()
+    save_raw_payload(CURRENT_RUN_ID, "Yahoo Finance", ticker, endpoint, params, full_payload, response.status_code)
+
+    payload = full_payload["chart"]["result"][0]
     timestamps = payload.get("timestamp", [])
-    quote_data = payload["indicators"]["quote"][0]
+    quote_data = payload.get("indicators", {}).get("quote", [{}])[0]
+    adj_data = payload.get("indicators", {}).get("adjclose", [{}])[0].get("adjclose", [])
+    meta = payload.get("meta", {})
+    currency = meta.get("currency")
+    exchange_name = meta.get("exchangeName") or meta.get("fullExchangeName")
     rows = []
 
     for i, stamp in enumerate(timestamps):
-        close = _safe_float(quote_data.get("close", [None] * len(timestamps))[i])
+        close_values = quote_data.get("close", [])
+        close = _safe_float(close_values[i]) if i < len(close_values) else None
         if close is None:
             continue
+        def item(name, default=None):
+            values = quote_data.get(name, [])
+            return values[i] if i < len(values) else default
+        adj_close = _safe_float(adj_data[i]) if i < len(adj_data) else close
         rows.append(
             (
                 ticker,
                 dt.datetime.fromtimestamp(stamp, tz=dt.timezone.utc).date(),
-                _safe_float(quote_data.get("open", [None] * len(timestamps))[i]),
-                _safe_float(quote_data.get("high", [None] * len(timestamps))[i]),
-                _safe_float(quote_data.get("low", [None] * len(timestamps))[i]),
+                _safe_float(item("open")),
+                _safe_float(item("high")),
+                _safe_float(item("low")),
                 close,
-                int(quote_data.get("volume", [0] * len(timestamps))[i] or 0),
+                adj_close,
+                int(item("volume", 0) or 0),
+                currency,
+                exchange_name,
                 "Yahoo Finance",
             )
         )
@@ -86,12 +117,13 @@ def load_yahoo(ticker):
         with conn.cursor() as cur:
             cur.executemany(
                 "INSERT INTO market_data "
-                "(ticker,price_date,open_price,high_price,low_price,close_price,volume,source) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s) "
+                "(ticker,price_date,open_price,high_price,low_price,close_price,adj_close,volume,currency,exchange_name,source) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
                 "ON DUPLICATE KEY UPDATE "
                 "open_price=VALUES(open_price),high_price=VALUES(high_price),"
                 "low_price=VALUES(low_price),close_price=VALUES(close_price),"
-                "volume=VALUES(volume),source=VALUES(source)",
+                "adj_close=VALUES(adj_close),volume=VALUES(volume),currency=VALUES(currency),"
+                "exchange_name=VALUES(exchange_name),source=VALUES(source)",
                 rows,
             )
     print(f"Yahoo {ticker}: {len(rows)} filas")
@@ -108,29 +140,41 @@ def load_fred():
         "UNRATE": "Unemployment Rate",
         "GDP": "GDP",
     }
+    observations_endpoint = "https://api.stlouisfed.org/fred/series/observations"
+    metadata_endpoint = "https://api.stlouisfed.org/fred/series"
     with get_connection() as conn:
         with conn.cursor() as cur:
             for series_id, name in series.items():
-                response = requests.get(
-                    "https://api.stlouisfed.org/fred/series/observations",
-                    params={
-                        "series_id": series_id,
-                        "api_key": FRED_KEY,
-                        "file_type": "json",
-                    },
-                    timeout=30,
-                )
+                meta_params = {"series_id": series_id, "api_key": FRED_KEY, "file_type": "json"}
+                meta_response = requests.get(metadata_endpoint, params=meta_params, timeout=30)
+                meta_response.raise_for_status()
+                meta_payload = meta_response.json()
+                save_raw_payload(CURRENT_RUN_ID, "FRED", None, metadata_endpoint, {"series_id": series_id}, meta_payload, meta_response.status_code)
+                metadata = (meta_payload.get("seriess") or [{}])[0]
+                units = metadata.get("units")
+                frequency = metadata.get("frequency")
+
+                params = {"series_id": series_id, "api_key": FRED_KEY, "file_type": "json"}
+                response = requests.get(observations_endpoint, params=params, timeout=30)
                 response.raise_for_status()
+                payload = response.json()
+                save_raw_payload(CURRENT_RUN_ID, "FRED", None, observations_endpoint, {"series_id": series_id}, payload, response.status_code)
                 rows = []
-                for observation in response.json().get("observations", []):
+                for observation in payload.get("observations", []):
                     value = _safe_float(observation.get("value"))
                     if value is not None:
-                        rows.append((series_id, name, observation["date"], value))
+                        rows.append((
+                            series_id, name, observation["date"], value,
+                            observation.get("realtime_start"), observation.get("realtime_end"),
+                            units, frequency,
+                        ))
                 cur.executemany(
                     "INSERT INTO economic_indicators "
-                    "(series_id,indicator_name,period_date,value) VALUES (%s,%s,%s,%s) "
-                    "ON DUPLICATE KEY UPDATE value=VALUES(value), "
-                    "indicator_name=VALUES(indicator_name)",
+                    "(series_id,indicator_name,period_date,value,realtime_start,realtime_end,units,frequency) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s) "
+                    "ON DUPLICATE KEY UPDATE value=VALUES(value),indicator_name=VALUES(indicator_name),"
+                    "realtime_start=VALUES(realtime_start),realtime_end=VALUES(realtime_end),"
+                    "units=VALUES(units),frequency=VALUES(frequency)",
                     rows,
                 )
                 print(f"FRED {series_id}: {len(rows)} filas")
@@ -147,18 +191,57 @@ def _latest_fact(companyfacts, tag):
     return latest.get("end"), _safe_float(latest.get("val"))
 
 
+def _store_sec_company_facts(ticker, data):
+    rows = []
+    for taxonomy, concepts in (data.get("facts") or {}).items():
+        if not isinstance(concepts, dict):
+            continue
+        for concept, fact in concepts.items():
+            label = (fact or {}).get("label")
+            for unit, entries in ((fact or {}).get("units") or {}).items():
+                for entry in entries or []:
+                    value = _safe_float(entry.get("val"))
+                    if value is None:
+                        continue
+                    identity = "|".join(str(x or "") for x in [ticker,taxonomy,concept,unit,entry.get("start"),entry.get("end"),entry.get("filed"),entry.get("accn"),entry.get("frame"),value])
+                    source_key = hashlib.sha256(identity.encode("utf-8")).hexdigest()
+                    rows.append((
+                        source_key,ticker,taxonomy,concept,(label or "")[:500],unit,
+                        entry.get("start"),entry.get("end"),value,entry.get("fy"),entry.get("fp"),
+                        entry.get("form"),entry.get("filed"),entry.get("accn"),entry.get("frame"),
+                    ))
+    if not rows:
+        return 0
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.executemany(
+                """
+                INSERT IGNORE INTO sec_company_facts
+                (source_key,ticker,taxonomy,concept,label,unit,start_date,end_date,value,
+                 fiscal_year,fiscal_period,form_type,filed_date,accession_number,frame)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                """,
+                rows,
+            )
+            return cur.rowcount
+
+
 def load_sec(ticker):
     cik = CIK.get(ticker)
     if not cik:
         return
 
+    endpoint = f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
     response = requests.get(
-        f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json",
+        endpoint,
         headers={"User-Agent": SEC_UA, "Accept-Encoding": "gzip, deflate"},
         timeout=40,
     )
     response.raise_for_status()
     data = response.json()
+    save_raw_payload(CURRENT_RUN_ID, "SEC EDGAR", ticker, endpoint, {}, data, response.status_code)
+    inserted_facts = _store_sec_company_facts(ticker, data)
+
     fields = {
         "revenue": ["RevenueFromContractWithCustomerExcludingAssessedTax", "Revenues"],
         "net_income": ["NetIncomeLoss"],
@@ -194,17 +277,11 @@ def load_sec(ticker):
                 "total_assets=VALUES(total_assets),total_liabilities=VALUES(total_liabilities),"
                 "equity=VALUES(equity),eps=VALUES(eps)",
                 (
-                    ticker,
-                    report_date,
-                    values["revenue"],
-                    values["net_income"],
-                    values["total_assets"],
-                    values["total_liabilities"],
-                    values["equity"],
-                    values["eps"],
+                    ticker,report_date,values["revenue"],values["net_income"],values["total_assets"],
+                    values["total_liabilities"],values["equity"],values["eps"],
                 ),
             )
-    print(f"SEC {ticker}: actualizado")
+    print(f"SEC {ticker}: actualizado; facts nuevos={inserted_facts}")
 
 
 def _parse_gdelt_date(raw_value):
@@ -219,16 +296,35 @@ def _parse_gdelt_date(raw_value):
     return None
 
 
+def _request_with_retry(url, timeout=45, attempts=4):
+    delay = max(1.0, GDELT_DELAY_SECONDS)
+    last = None
+    for attempt in range(1, attempts + 1):
+        response = requests.get(url, timeout=timeout)
+        last = response
+        if response.status_code != 429:
+            response.raise_for_status()
+            return response
+        if attempt < attempts:
+            wait = delay * (2 ** (attempt - 1))
+            print(f"GDELT 429: reintento {attempt}/{attempts} en {wait:.1f}s")
+            time.sleep(wait)
+    last.raise_for_status()
+    return last
+
+
 def load_gdelt_and_sentiment(ticker):
-    query = quote(f'"{COMPANY_QUERY.get(ticker, ticker)}" finance')
+    query_text = f'"{COMPANY_QUERY.get(ticker, ticker)}" finance'
+    query = quote(query_text)
     url = (
         "https://api.gdeltproject.org/api/v2/doc/doc"
         f"?query={query}&mode=ArtList&maxrecords={NEWS_PER_TICKER}"
         "&format=json&sort=HybridRel"
     )
-    response = requests.get(url, timeout=45)
-    response.raise_for_status()
-    articles = response.json().get("articles", [])[:NEWS_PER_TICKER]
+    response = _request_with_retry(url, timeout=45)
+    payload = response.json()
+    save_raw_payload(CURRENT_RUN_ID, "GDELT", ticker, url, {"query": query_text, "maxrecords": NEWS_PER_TICKER}, payload, response.status_code)
+    articles = payload.get("articles", [])[:NEWS_PER_TICKER]
     inserted_news = 0
     inserted_sentiment = 0
 
@@ -242,31 +338,40 @@ def load_gdelt_and_sentiment(ticker):
 
                 existing = None
                 if article_url:
-                    cur.execute(
-                        "SELECT id FROM financial_news WHERE url=%s LIMIT 1",
-                        (article_url,),
-                    )
+                    cur.execute("SELECT id FROM financial_news WHERE url=%s LIMIT 1", (article_url,))
                     existing = cur.fetchone()
                 if not existing:
                     cur.execute(
-                        "SELECT id FROM financial_news "
-                        "WHERE ticker=%s AND title=%s LIMIT 1",
+                        "SELECT id FROM financial_news WHERE ticker=%s AND title=%s LIMIT 1",
                         (ticker, title[:1000]),
                     )
                     existing = cur.fetchone()
 
+                seen_at = _parse_gdelt_date(article.get("seendate"))
                 if existing:
                     news_id = existing["id"]
+                    cur.execute(
+                        """
+                        UPDATE financial_news SET domain=%s,language=%s,source_country=%s,
+                               social_image=%s,seen_at=%s
+                        WHERE id=%s
+                        """,
+                        (
+                            article.get("domain"), article.get("language"), article.get("sourcecountry"),
+                            (article.get("socialimage") or "")[:1500], seen_at, news_id,
+                        ),
+                    )
                 else:
                     cur.execute(
-                        "INSERT INTO financial_news "
-                        "(ticker,title,url,published_at,source) VALUES (%s,%s,%s,%s,%s)",
+                        """
+                        INSERT INTO financial_news
+                        (ticker,title,url,published_at,source,domain,language,source_country,social_image,seen_at)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                        """,
                         (
-                            ticker,
-                            title[:1000],
-                            article_url,
-                            _parse_gdelt_date(article.get("seendate")),
-                            article.get("domain") or "GDELT",
+                            ticker,title[:1000],article_url,seen_at,article.get("domain") or "GDELT",
+                            article.get("domain"),article.get("language"),article.get("sourcecountry"),
+                            (article.get("socialimage") or "")[:1500],seen_at,
                         ),
                     )
                     news_id = cur.lastrowid
@@ -275,31 +380,22 @@ def load_gdelt_and_sentiment(ticker):
                 cur.execute("SELECT id FROM sentiment WHERE news_id=%s LIMIT 1", (news_id,))
                 if cur.fetchone():
                     continue
-
                 try:
                     sentiment = analyze_sentiment(title)
                     cur.execute(
                         "INSERT INTO sentiment "
-                        "(news_id,ticker,positive_score,neutral_score,negative_score,"
-                        "sentiment_label,sentiment_score) VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                        "(news_id,ticker,positive_score,neutral_score,negative_score,sentiment_label,sentiment_score) "
+                        "VALUES (%s,%s,%s,%s,%s,%s,%s)",
                         (
-                            news_id,
-                            ticker,
-                            sentiment["positive"],
-                            sentiment["neutral"],
-                            sentiment["negative"],
-                            sentiment["label"],
-                            sentiment["score"],
+                            news_id,ticker,sentiment["positive"],sentiment["neutral"],sentiment["negative"],
+                            sentiment["label"],sentiment["score"],
                         ),
                     )
                     inserted_sentiment += 1
                 except Exception as exc:
                     print(f"FinBERT {ticker}: {exc}")
 
-    print(
-        f"GDELT {ticker}: {inserted_news} noticias nuevas, "
-        f"{inserted_sentiment} sentimientos nuevos"
-    )
+    print(f"GDELT {ticker}: {inserted_news} noticias nuevas, {inserted_sentiment} sentimientos nuevos")
 
 
 def _returns(closes, n):
@@ -446,15 +542,15 @@ def train_predict_xgb(ticker):
             )
             cur.execute(
                 "INSERT INTO prediction_history "
-                "(ticker,prediction_date,horizon_days,probability_favorable,predicted_class,model) "
-                "VALUES (%s,%s,%s,%s,%s,'XGBoost')",
-                (ticker, today, HORIZON, probability, predicted_class),
+                "(run_id,ticker,prediction_date,horizon_days,probability_favorable,predicted_class,model) "
+                "VALUES (%s,%s,%s,%s,%s,%s,'XGBoost')",
+                (CURRENT_RUN_ID, ticker, today, HORIZON, probability, predicted_class),
             )
             cur.execute(
                 "INSERT INTO asset_ranking "
-                "(ticker,probability_score,sentiment_score,final_score,ranking_position) "
-                "VALUES (%s,%s,%s,%s,0)",
-                (ticker, probability, sentiment_score, ranking_score),
+                "(run_id,ticker,probability_score,sentiment_score,final_score,ranking_position) "
+                "VALUES (%s,%s,%s,%s,%s,0)",
+                (CURRENT_RUN_ID, ticker, probability, sentiment_score, ranking_score),
             )
 
     print(f"XGBoost {ticker}: prob={probability:.4f}, score={ranking_score:.4f}")
@@ -555,11 +651,12 @@ def evaluate_walk_forward(ticker):
             cur.execute(
                 """
                 INSERT INTO model_metrics
-                (ticker,metric_date,accuracy,precision_score,recall_score,f1_score,
+                (run_id,ticker,metric_date,accuracy,precision_score,recall_score,f1_score,
                  roc_auc,samples,folds,validation_method)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,'Walk-Forward')
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'Walk-Forward')
                 """,
                 (
+                    CURRENT_RUN_ID,
                     ticker,
                     today,
                     metrics["accuracy"],
@@ -625,11 +722,12 @@ def evaluate_walk_forward(ticker):
             cur.execute(
                 """
                 INSERT INTO backtesting
-                (ticker,start_date,end_date,total_return,benchmark_return,
+                (run_id,ticker,start_date,end_date,total_return,benchmark_return,
                  max_drawdown,hit_rate,trades_count)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 """,
                 (
+                    CURRENT_RUN_ID,
                     ticker,
                     start_date,
                     end_date,
@@ -651,84 +749,93 @@ def evaluate_walk_forward(ticker):
     )
 
 
-def update_ranks():
+def update_ranks(run_id):
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT id,ticker,final_score FROM asset_ranking "
-                "WHERE calculated_at >= NOW() - INTERVAL 1 DAY "
-                "ORDER BY id DESC"
+                "SELECT id,ticker,final_score FROM asset_ranking WHERE run_id=%s ORDER BY id DESC",
+                (run_id,),
             )
             rows = cur.fetchall()
             latest = {}
             for row in rows:
                 latest.setdefault(row["ticker"], row)
-
-            ordered = sorted(
-                latest.values(),
-                key=lambda row: float(row["final_score"] or 0.0),
-                reverse=True,
-            )
+            ordered = sorted(latest.values(), key=lambda row: float(row["final_score"] or 0), reverse=True)
             for rank, row in enumerate(ordered, start=1):
-                cur.execute(
-                    "UPDATE asset_ranking SET ranking_position=%s WHERE id=%s",
-                    (rank, row["id"]),
-                )
+                cur.execute("UPDATE asset_ranking SET ranking_position=%s WHERE id=%s", (rank, row["id"]))
 
 
 def main():
+    global CURRENT_RUN_ID
     init_database()
-
-    for ticker in TICKERS:
-        try:
-            load_yahoo(ticker)
-        except Exception as exc:
-            print(f"Yahoo {ticker} ERROR: {exc}")
+    CURRENT_RUN_ID = start_analysis_run(MARKET_PERIOD, HORIZON, "xgboost-finbert-v3", len(TICKERS))
+    print(f"Analysis run iniciado: {CURRENT_RUN_ID}")
+    notes = []
 
     try:
-        load_fred()
-    except Exception as exc:
-        print(f"FRED ERROR: {exc}")
-
-    for ticker in TICKERS:
-        try:
-            load_sec(ticker)
-        except Exception as exc:
-            print(f"SEC {ticker} ERROR: {exc}")
+        for ticker in TICKERS:
+            try:
+                load_yahoo(ticker)
+            except Exception as exc:
+                notes.append(f"Yahoo {ticker}: {exc}")
+                print(f"Yahoo {ticker} ERROR: {exc}")
 
         try:
-            load_gdelt_and_sentiment(ticker)
+            load_fred()
         except Exception as exc:
-            print(f"GDELT/FinBERT {ticker} ERROR: {exc}")
+            notes.append(f"FRED: {exc}")
+            print(f"FRED ERROR: {exc}")
 
-        try:
-            train_predict_xgb(ticker)
-        except Exception as exc:
-            print(f"XGBoost {ticker} ERROR: {exc}")
+        for ticker in TICKERS:
+            try:
+                load_sec(ticker)
+            except Exception as exc:
+                notes.append(f"SEC {ticker}: {exc}")
+                print(f"SEC {ticker} ERROR: {exc}")
 
-        try:
-            evaluate_walk_forward(ticker)
-        except Exception as exc:
-            print(f"WalkForward/Backtesting {ticker} ERROR: {exc}")
+            try:
+                load_gdelt_and_sentiment(ticker)
+            except Exception as exc:
+                notes.append(f"GDELT/FinBERT {ticker}: {exc}")
+                print(f"GDELT/FinBERT {ticker} ERROR: {exc}")
 
-        time.sleep(0.2)
+            try:
+                train_predict_xgb(ticker)
+            except Exception as exc:
+                notes.append(f"XGBoost {ticker}: {exc}")
+                print(f"XGBoost {ticker} ERROR: {exc}")
 
-    update_ranks()
+            try:
+                evaluate_walk_forward(ticker)
+            except Exception as exc:
+                notes.append(f"WalkForward {ticker}: {exc}")
+                print(f"WalkForward/Backtesting {ticker} ERROR: {exc}")
 
-    try:
+            time.sleep(max(0.2, GDELT_DELAY_SECONDS))
+
+        update_ranks(CURRENT_RUN_ID)
+
         from jobs.run_decision_engine import main as run_decision_engine
-        run_decision_engine()
-    except Exception as exc:
-        print(f"Decision Engine ERROR: {exc}")
+        run_decision_engine(CURRENT_RUN_ID)
 
-    try:
-        from jobs.run_gemini_agent import main as run_gemini_agent
-        run_gemini_agent()
-    except Exception as exc:
-        # Gemini no debe bloquear los datos cuantitativos ni el pipeline.
-        print(f"Gemini Agent ERROR: {exc}")
+        from jobs.build_kpi_snapshot import build_snapshot
+        build_snapshot(CURRENT_RUN_ID)
 
-    print("Pipeline finalizado")
+        try:
+            from jobs.run_best_asset_agent import main as run_best_asset_agent
+            if not run_best_asset_agent(CURRENT_RUN_ID):
+                notes.append("Gemini: sin recomendación generada")
+        except Exception as exc:
+            notes.append(f"Gemini: {exc}")
+            print(f"Gemini Best Agent ERROR: {exc}")
+
+        status = "COMPLETED" if not notes else "COMPLETED_WITH_WARNINGS"
+        finish_analysis_run(CURRENT_RUN_ID, status, " | ".join(notes)[:8000] if notes else None)
+        print(f"Pipeline finalizado run={CURRENT_RUN_ID} status={status}")
+
+    except Exception as exc:
+        finish_analysis_run(CURRENT_RUN_ID, "FAILED", str(exc)[:8000])
+        raise
 
 
 if __name__ == "__main__":

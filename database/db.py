@@ -3,11 +3,29 @@ import pymysql
 
 
 def _base_config(include_database=True):
+    host = os.getenv("MYSQLHOST")
+    password = os.getenv("MYSQLPASSWORD")
+    allow_local = os.getenv("ALLOW_LOCAL_MYSQL", "false").strip().lower() in {"1","true","yes","on"}
+
+    if not host:
+        if allow_local:
+            host = "127.0.0.1"
+        else:
+            raise RuntimeError(
+                "MYSQLHOST no está configurado. En Railway use "
+                "${{MySQL.RAILWAY_PRIVATE_DOMAIN}}. Para MySQL local use ALLOW_LOCAL_MYSQL=true."
+            )
+    if password is None:
+        if allow_local:
+            password = ""
+        else:
+            raise RuntimeError("MYSQLPASSWORD no está configurado.")
+
     cfg = {
-        "host": os.getenv("MYSQLHOST") or "127.0.0.1",
+        "host": host,
         "port": int(os.getenv("MYSQLPORT") or "3306"),
         "user": os.getenv("MYSQLUSER") or "root",
-        "password": os.getenv("MYSQLPASSWORD") or "",
+        "password": password,
         "charset": "utf8mb4",
         "cursorclass": pymysql.cursors.DictCursor,
         "autocommit": True,

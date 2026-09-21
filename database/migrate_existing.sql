@@ -1,11 +1,16 @@
 USE inversion_bi;
 
--- Solo para una BD creada con una versión anterior.
--- Si una columna ya existe, omite manualmente ese ALTER.
-ALTER TABLE backtesting
-ADD COLUMN max_drawdown DECIMAL(12,6) NULL AFTER benchmark_return;
+-- Este archivo documenta los cambios principales de la versión V2.
+-- La forma recomendada es ejecutar `python -m database.init_db`, que aplica
+-- estas migraciones de manera idempotente sin fallar si una columna ya existe.
 
-ALTER TABLE backtesting
-ADD COLUMN trades_count INT NOT NULL DEFAULT 0 AFTER hit_rate;
+-- Nuevos conceptos: analysis_runs, api_raw_payload, sec_company_facts,
+-- asset_kpi_snapshot y ai_recommendation se crean automáticamente desde schema.sql.
 
--- Las tablas nuevas se crean automáticamente con: python -m database.init_db
+-- Si se desea inspeccionar manualmente la estructura final:
+SHOW TABLES;
+DESCRIBE analysis_runs;
+DESCRIBE asset_kpi_snapshot;
+DESCRIBE ai_recommendation;
+DESCRIBE api_raw_payload;
+DESCRIBE sec_company_facts;
