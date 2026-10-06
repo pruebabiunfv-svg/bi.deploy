@@ -1,4 +1,4 @@
-# Sistema BI de Inversión V2 — KPI coherentes por empresa + Gemini
+# Sistema BI de Inversión V2 — KPI coherentes por empresa + Gemini 
 
 Esta versión corrige el problema de Power BI donde **Mejor activo**, **Ranking**, **Sentimiento**, **Backtesting** y otros KPI podían provenir de tickers o ejecuciones diferentes.
 
