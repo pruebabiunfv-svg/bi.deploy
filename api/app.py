@@ -80,6 +80,7 @@ def root():
                 "/api/dashboard/assets",
                 "/api/dashboard/recommendation",
                 "/api/dashboard/runs",
+                "/api/dashboard/company-opinions",
             ],
         }
     )
@@ -406,7 +407,7 @@ def dashboard_company_opinions():
         """
     )
 
-    
+
 @app.cli.command("init-db")
 def init_db_command():
     init_database()
