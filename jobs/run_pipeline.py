@@ -829,6 +829,26 @@ def main():
             notes.append(f"Gemini: {exc}")
             print(f"Gemini Best Agent ERROR: {exc}")
 
+        try:
+            from jobs.run_company_opinions import (
+                main as generate_company_opinions
+            )
+
+            generadas, total = generate_company_opinions(
+                CURRENT_RUN_ID
+            )
+
+            if generadas < total:
+                notes.append(
+                    f"Opiniones IA individuales: "
+                    f"{generadas}/{total}"
+                )
+
+        except Exception as exc:
+            notes.append(
+                f"Gemini empresas: {exc}"
+            )
+
         status = "COMPLETED" if not notes else "COMPLETED_WITH_WARNINGS"
         finish_analysis_run(CURRENT_RUN_ID, status, " | ".join(notes)[:8000] if notes else None)
         print(f"Pipeline finalizado run={CURRENT_RUN_ID} status={status}")
@@ -840,3 +860,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    

@@ -306,3 +306,21 @@ CREATE TABLE IF NOT EXISTS ai_recommendation (
   UNIQUE KEY uq_ai_recommendation_run (run_id),
   INDEX idx_ai_best (ticker, created_at)
 );
+
+
+CREATE TABLE IF NOT EXISTS ai_asset_opinion (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    run_id BIGINT NOT NULL,
+    ticker VARCHAR(15) NOT NULL,
+
+    summary TEXT,
+    strengths TEXT,
+    risks TEXT,
+    model_comment TEXT,
+    model_name VARCHAR(80),
+
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE KEY uq_asset_opinion_run_ticker (run_id, ticker),
+    INDEX idx_company_opinion (ticker, run_id)
+);

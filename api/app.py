@@ -370,7 +370,43 @@ def dashboard_runs():
         """
     )
 
+@app.get("/api/dashboard/company-opinions")
+def dashboard_company_opinions():
 
+    denied = _analytics_guard()
+
+    if denied:
+        return denied
+
+    return _json_rows(
+        """
+        SELECT
+            o.run_id,
+            o.ticker,
+            o.summary,
+            o.strengths,
+            o.risks,
+            o.model_comment,
+            o.model_name,
+            o.created_at
+
+        FROM ai_asset_opinion o
+
+        INNER JOIN (
+            SELECT MAX(id) AS run_id
+            FROM analysis_runs
+            WHERE status IN (
+                'COMPLETED',
+                'COMPLETED_WITH_WARNINGS'
+            )
+        ) r
+            ON r.run_id = o.run_id
+
+        ORDER BY o.ticker ASC
+        """
+    )
+
+    
 @app.cli.command("init-db")
 def init_db_command():
     init_database()
