@@ -1,78 +1,62 @@
-POWER BI - DASHBOARD DE INVERSIÓN V3 (EMPRESA + OPINIONES IA)
+POWER BI — InversIA V4 / 10 EMPRESAS / YAHOO FINANCE / GEMINI
 
-1) API / Railway
-   Asegúrese de que el pipeline esté COMPLETED o COMPLETED_WITH_WARNINGS.
-   La API debe devolver JSON en estos 4 endpoints:
-   /api/dashboard/assets
-   /api/dashboard/recommendation
-   /api/dashboard/company-opinions
-   /api/market-history
+1. Desplegar API y ejecutar pipeline según docs/RAILWAY.md.
+   Revisar primero /api/dashboard/status:
+   - published_run_id: ejecución de la que salen TODOS los paneles.
+   - latest_run_id: última ejecución, que puede ser parcial.
+   - latest_company_opinions: opiniones realmente almacenadas para la última ejecución.
+   - published_is_older=true: se conserva el último conjunto íntegro.
 
-2) POWER QUERY (Inicio > Transformar datos > Consulta en blanco > Editor avanzado)
-   Importe PowerQuery_DashboardAssets.m       -> DashboardAssets
-   Importe PowerQuery_AIRecommendation.m      -> AIRecommendation
-   Importe PowerQuery_CompanyOpinions.m       -> CompanyOpinions
-   Importe PowerQuery_MarketHistory.m         -> MarketHistory
-   Todos usan BaseUrl = https://bideploy-production.up.railway.app
-   Cambie BaseUrl en TODOS los archivos si el dominio real es distinto.
-   NO mezcle consultas legacy Predictions/Sentiment/Backtesting/ModelMetrics
-   con las tarjetas de la vista V3: los KPI salen de un mismo snapshot.
+2. En Power BI Desktop: Obtener datos > Consulta en blanco > Editor avanzado.
+   Crear estas consultas con el nombre de la izquierda y contenido del archivo:
 
-3) MODELO Y MEDIDAS
-   En Measures.dax hay DOS tablas calculadas:
-     SelectorEmpresa (slicer empresa; selección única)
-     Periodos        (slicer período; selección única; ordenar Periodo por Orden)
-   NO crear relaciones desde esas tablas hacia otros hechos.
-   No usar el slicer DimActivo del modelo V2; quítelo de la página.
-   Cree cada expresión de Measures.dax como Nueva tabla o Nueva medida
-   POR SEPARADO. No pegar el archivo completo en una sola medida.
-   Si ya existe una medida del mismo nombre, sustituya su fórmula.
+   DashboardAssets      -> PowerQuery_DashboardAssets.m
+   AIRecommendation     -> PowerQuery_AIRecommendation.m
+   CompanyOpinions      -> PowerQuery_CompanyOpinions.m
+   MarketHistory        -> PowerQuery_MarketHistory.m
+   YahooProfiles        -> PowerQuery_YahooProfiles.m
+   YahooCorporateActions -> PowerQuery_YahooCorporateActions.m
+   DashboardStatus      -> PowerQuery_DashboardStatus.m
 
-4) DISTRIBUCIÓN SIMILAR A LA REFERENCIA
-   Panel superior: SelectorEmpresa[Empresa] | Periodos[Periodo]
-   Tarjetas:
-     [Mejor Activo IA]             -> ganador global, constante
-     [Probabilidad Favorable]      -> empresa seleccionada (formato %)
-     [Sentimiento FinBERT]         -> score entre -1 y +1
-     [Rentabilidad Backtesting]    -> empresa seleccionada (formato %)
-     [Drawdown Maximo]             -> empresa seleccionada (formato %)
-   Ranking barras:
-     Eje DashboardAssets[ticker]
-     Valor [Puntuacion Ranking] (0-100), ordenar descendente
-     Color condicional con [Color Ranking]; muestra TODOS los tickers.
-   Histórico líneas:
-     Eje MarketHistory[price_date]
-     Valores [Indice Precio Normalizado], opcional [Indice SP500]
-     Eje X continuo; desactivar Mostrar elementos sin datos.
-   [Indice SP500] exige que existan precios de SPY en market_data.
-   BENCHMARK_TICKER=SPY permite cargarlos incluso si SPY no está en TICKERS.
-   Panel inferior derecho:
-     [Empresa Seleccionada], [Opinion IA Empresa] o [Opinion IA Empresa Breve]
-   Panel inferior izquierdo:
-     [Mejor Empresa IA], [Score Mejor Activo], [Explicacion IA Completa]
+   La URL base de ejemplo es https://bideploy-production.up.railway.app.
+   Cambiar en los siete archivos si el dominio real es diferente.
+   Con PUBLIC_ANALYTICS=true, autenticación Anónima en Power BI.
 
-5) ESCALAS/FORMATOS
-   Valores probabilidad/backtesting/drawdown/hit rate = decimales [0,1]:
-   aplicar formato porcentual; NO multiplicar esas medidas por 100.
-   [Score Empresa], [Score Mejor Activo], [Puntuacion Ranking] sí van de 0 a 100.
-   [Rentabilidad Precio Periodo] es retorno de mercado del período seleccionado;
-   NO confundirla con [Rentabilidad Backtesting] del modelo.
+3. Power BI > Modelado > Nueva tabla: cree POR SEPARADO las tablas calculadas
+   SelectorEmpresa y Periodos de Measures.dax. No cree relaciones entre ellas.
+   Crear cada medida restante por separado en Modelado > Nueva medida.
+   Utilizar SelectorEmpresa[Empresa] como slicer de SELECCIÓN ÚNICA.
+   Al cargar un run nuevo completo de 10 empresas aparecen automáticamente:
+   Apple, Microsoft, NVIDIA, Amazon, Google, Meta, Tesla, Netflix, AMD y Oracle.
+   SPY solo es benchmark y no es seleccionable.
 
-6) PRUEBAS
-   Seleccione AMZN -> deben cambiar tarjetas, curva y opinión IA individual.
-   Seleccione MSFT -> deberían reflejar MSFT sin afectar el ranking global.
-   La opinión comparativa debe seguir explicando is_best=1 del mismo run_id.
-   Cambiar 3 meses/1 año solo recorta la curva histórica: no reentrena XGBoost
-   ni cambia el horizonte de predicción. Ejecutar pipeline + Refresh Power BI
-   para traer datos y textos nuevos.
+4. Distribución similar a la imagen:
+   - Fila 1: Empresa, Periodo, Estado Publicacion.
+   - Fila 2 tarjetas: Mejor Activo IA, Probabilidad Favorable, Sentimiento
+     FinBERT, Rentabilidad Backtesting, Drawdown Maximo.
+   - Centro izquierdo: ranking (DashboardAssets[ticker] por Puntuacion Ranking).
+   - Centro derecho: curva (MarketHistory[price_date] por Indice Precio
+     Normalizado y opcional Indice SP500).
+   - Abajo izquierda: Explicacion IA Completa / Comentario IA Mejor Activo.
+   - Abajo derecha: Opinion IA Empresa / Opinion IA Empresa Breve.
+   - Nueva fila Yahoo opcional: Capitalizacion Yahoo, PER Historico Yahoo,
+     Beta Yahoo, Rendimiento Dividendo Yahoo, Sector Yahoo.
+   - Eventos: YahooCorporateActions (fecha, ticker, tipo, importe/razón split).
 
-   Apariencia: Vista > Temas > Examinar temas e importe
-   Theme_Inversion_IA.json. Use tarjetas blancas de esquinas redondeadas,
-   fondo azul muy claro y paneles inferiores de texto con ajuste de línea.
+5. Formatos: probabilidad, drawdown, backtesting y dividend_yield en porcentaje
+   (fracción 0..1, no multiplicar por 100 en DAX). Scores en escala 0..100.
+   Capitalización = moneda USD y unidades miles de millones opcionales;
+   PER y Beta = decimal. Por cada ticker, las nuevas cifras Yahoo pueden
+   estar vacías si la fuente denegó solicitudes (no presentar como cero).
 
-7) CAVEATS
-   La vista se construye en Power BI Desktop; no se entrega un .pbix binario.
-   Cambiar de empresa NO hace una solicitud de IA en tiempo real: muestra el
-   comentario ya almacenado por el pipeline en ai_asset_opinion.
-   Una ejecución con cuota agotada de Gemini podrá tener KPI sin opinión IA.
-   No presentar los scores como garantía de rentabilidad futura.
+6. Prueba obligatoria:
+   - Seleccionar AMZN -> varían sus KPI, curva, perfil y opinión Gemini.
+   - Seleccionar MSFT -> cambian los elementos anteriores, no el ganador global.
+   - El ranking global contiene 10 tickers del MISMO run_id.
+   - AIRecommendation, CompanyOpinions y DashboardAssets mantienen run_id idéntico.
+   - Periodo 3 meses / 1 año / 5 años / 10 años afecta SOLO el gráfico
+     histórico; no reentrena el modelo ni modifica la opinión publicada.
+
+7. La creación de .pbix requiere Power BI Desktop. Estos archivos entregan
+   Power Query, DAX y configuración para construir la vista; el ZIP no incluye
+   un .pbix binario. Los resultados no garantizan rentabilidad futura.

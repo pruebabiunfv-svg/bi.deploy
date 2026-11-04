@@ -11,6 +11,7 @@ COPY requirements-api.txt requirements-worker.txt ./
 RUN pip install --no-cache-dir -r requirements-worker.txt
 
 COPY database ./database
+COPY config ./config
 COPY jobs ./jobs
 COPY ml ./ml
 

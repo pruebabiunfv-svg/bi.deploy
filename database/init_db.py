@@ -3,20 +3,9 @@ import re
 from pathlib import Path
 
 from database.db import get_connection
+from config.assets import COMPANY_NAMES, configured_tickers
 
 DB_NAME = os.getenv("APP_DATABASE", "inversion_bi")
-
-COMPANY_NAMES = {
-    "AAPL": "Apple Inc.",
-    "MSFT": "Microsoft Corporation",
-    "NVDA": "NVIDIA Corporation",
-    "AMZN": "Amazon.com, Inc.",
-    "GOOGL": "Alphabet Inc.",
-    "META": "Meta Platforms, Inc.",
-    "TSLA": "Tesla, Inc.",
-    "SPY": "SPDR S&P 500 ETF Trust",
-    "QQQ": "Invesco QQQ Trust",
-}
 
 
 def _validate_name(name):
@@ -87,15 +76,11 @@ def apply_migrations():
 
 
 def seed_assets():
-    tickers = [
-        t.strip().upper()
-        for t in os.getenv("TICKERS", "AAPL,MSFT,NVDA,AMZN,GOOGL,SPY,QQQ").split(",")
-        if t.strip()
-    ]
+    tickers = configured_tickers()
     with get_connection() as conn:
         with conn.cursor() as cur:
             for ticker in tickers:
-                asset_type = "ETF" if ticker in {"SPY", "QQQ"} else "STOCK"
+                asset_type = "STOCK"
                 company_name = COMPANY_NAMES.get(ticker, ticker)
                 cur.execute(
                     """

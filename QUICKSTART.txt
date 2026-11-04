@@ -1,10 +1,13 @@
-1. Subir el proyecto a GitHub.
-2. En bi.deploy: Pre-deploy = python -m database.init_db
-3. En inversion_worker: RAILWAY_DOCKERFILE_PATH=Dockerfile.worker
-4. Agregar variables MySQL, FRED, HF y Gemini.
-5. Añadir GDELT_DELAY_SECONDS=3.
-6. Redeploy inversion_worker.
-7. Revisar logs: debe aparecer Analysis run iniciado, Snapshot KPI y Gemini Best Agent.
-8. Ejecutar docs/SQL_VERIFY_KPI.sql en MySQL.
-9. En Power BI usar DashboardAssets + AIRecommendation + MarketHistory.
-10. Crear DimActivo y relaciones según powerbi/README.txt.
+1. Editar Railway Variables del worker:
+   TICKERS=AAPL,MSFT,NVDA,AMZN,GOOGL,META,TSLA,NFLX,AMD,ORCL
+   BENCHMARK_TICKER=SPY
+   GEMINI_API_KEY=...  GEMINI_MODEL=gemini-2.5-flash
+   RAW_AUDIT_MODE=bounded
+2. Conectar MySQL a API y worker. No utilizar el mismo volumen para contenedores.
+3. En API / Pre-deploy: python -m database.init_db
+4. En worker: RAILWAY_DOCKERFILE_PATH=Dockerfile.worker
+5. Verificar el espacio del volumen MySQL y respaldar antes de ampliar.
+6. Ejecutar una sola vez el worker para producir un nuevo run de 10 empresas.
+7. Consultar /api/dashboard/status. Esperar published_run_id y cobertura 10/10.
+8. Construir Power BI siguiendo powerbi/README.txt y PowerQuery_*.m / Measures.dax.
+9. Revisar docs/SQL_VERIFY_V4.sql si faltan resultados o el API devuelve [].

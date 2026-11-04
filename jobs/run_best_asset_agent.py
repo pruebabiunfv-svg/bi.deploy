@@ -79,4 +79,9 @@ def main(run_id):
 
 
 if __name__ == "__main__":
-    raise SystemExit("Ejecuta este módulo desde run_pipeline.py para conservar run_id")
+    import argparse
+    parser = argparse.ArgumentParser(description="Regenerar la explicación comparativa IA de un run")
+    parser.add_argument("--run-id", type=int, required=True)
+    arguments = parser.parse_args()
+    if not main(arguments.run_id):
+        raise SystemExit("No se pudo generar la recomendación IA para el run indicado")

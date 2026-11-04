@@ -9,60 +9,25 @@ from urllib.parse import quote
 import requests
 
 from database.db import get_connection
-from database.audit import finish_analysis_run, save_raw_payload, start_analysis_run
+from database.audit import finish_analysis_run, save_raw_payload, single_flight_pipeline, start_analysis_run
 from database.init_db import init_database
+from config.assets import COMPANY_NAMES, COMPANY_QUERY, SEC_CIK, configured_tickers
 from ml.hf_client import analyze_sentiment
 from ml.validation import classification_metrics, walk_forward_splits
 
-TICKERS = [
-    x.strip().upper()
-    for x in os.getenv("TICKERS", "AAPL,MSFT,NVDA,AMZN,GOOGL,SPY,QQQ").split(",")
-    if x.strip()
-]
+TICKERS = configured_tickers()
 MARKET_PERIOD = os.getenv("MARKET_PERIOD", "10y")
 BENCHMARK_TICKER = os.getenv("BENCHMARK_TICKER", "SPY").strip().upper()
 HORIZON = int(os.getenv("PREDICTION_HORIZON_DAYS", "126"))
 FRED_KEY = os.getenv("FRED_API_KEY", "")
 SEC_UA = os.getenv("SEC_USER_AGENT", "BusinessAnalytics/1.0 contact@example.com")
-NEWS_PER_TICKER = int(os.getenv("NEWS_PER_TICKER", "25"))
+NEWS_PER_TICKER = int(os.getenv("NEWS_PER_TICKER", "15"))
+FINBERT_MAX_NEW_PER_TICKER = int(os.getenv("FINBERT_MAX_NEW_PER_TICKER", "6"))
 WALK_FORWARD_FOLDS = int(os.getenv("WALK_FORWARD_FOLDS", "4"))
 GDELT_DELAY_SECONDS = float(os.getenv("GDELT_DELAY_SECONDS", "3"))
 CURRENT_RUN_ID = None
 
-CIK = {
-    "AAPL": "0000320193",
-    "MSFT": "0000789019",
-    "NVDA": "0001045810",
-    "AMZN": "0001018724",
-    "GOOGL": "0001652044",
-    "META": "0001326801",
-    "TSLA": "0001318605",
-}
-
-
-COMPANY_NAMES = {
-    "AAPL": "Apple Inc.",
-    "MSFT": "Microsoft Corporation",
-    "NVDA": "NVIDIA Corporation",
-    "AMZN": "Amazon.com, Inc.",
-    "GOOGL": "Alphabet Inc.",
-    "META": "Meta Platforms, Inc.",
-    "TSLA": "Tesla, Inc.",
-    "SPY": "SPDR S&P 500 ETF Trust",
-    "QQQ": "Invesco QQQ Trust",
-}
-
-COMPANY_QUERY = {
-    "AAPL": "Apple Inc",
-    "MSFT": "Microsoft",
-    "NVDA": "NVIDIA",
-    "AMZN": "Amazon",
-    "GOOGL": "Alphabet Google",
-    "META": "Meta Platforms",
-    "TSLA": "Tesla",
-    "SPY": "S&P 500",
-    "QQQ": "Nasdaq 100",
-}
+CIK = SEC_CIK
 
 
 def _safe_float(value):
@@ -386,6 +351,8 @@ def load_gdelt_and_sentiment(ticker):
 
                 cur.execute("SELECT id FROM sentiment WHERE news_id=%s LIMIT 1", (news_id,))
                 if cur.fetchone():
+                    continue
+                if inserted_sentiment >= FINBERT_MAX_NEW_PER_TICKER:
                     continue
                 try:
                     sentiment = analyze_sentiment(title)
@@ -772,6 +739,7 @@ def update_ranks(run_id):
                 cur.execute("UPDATE asset_ranking SET ranking_position=%s WHERE id=%s", (rank, row["id"]))
 
 
+@single_flight_pipeline
 def main():
     global CURRENT_RUN_ID
     init_database()
@@ -784,8 +752,25 @@ def main():
             try:
                 load_yahoo(ticker)
             except Exception as exc:
-                notes.append(f"Yahoo {ticker}: {exc}")
-                print(f"Yahoo {ticker} ERROR: {exc}")
+                print(f"Yahoo chart {ticker} ERROR: {exc}; intentando yfinance history")
+                try:
+                    from jobs.yahoo_enrichment import load_yahoo_price_fallback
+                    loaded = load_yahoo_price_fallback(ticker, MARKET_PERIOD)
+                    print(f"Yahoo fallback {ticker}: {loaded} filas")
+                except Exception as fallback_exc:
+                    notes.append(f"Yahoo {ticker}: chart={exc}; fallback={fallback_exc}")
+
+            # Perfil bursátil, dividendos y splits: enriquecimiento no bloqueante.
+            if os.getenv("YAHOO_ENRICHMENT_ENABLED", "true").lower() in ("1", "true", "yes"):
+                try:
+                    from jobs.yahoo_enrichment import load_yahoo_extra
+                    extra = load_yahoo_extra(CURRENT_RUN_ID, ticker, MARKET_PERIOD,
+                                             profile=True, actions=True)
+                    if extra["warnings"]:
+                        notes.append(f"Yahoo datos ampliados {ticker}: {'; '.join(extra['warnings'])}")
+                    print(f"Yahoo extra {ticker}: perfil={extra['profile']} eventos={extra['actions']}")
+                except Exception as exc:
+                    notes.append(f"Yahoo datos ampliados {ticker}: {exc}")
 
         # Histórico de referencia para la línea normalizada del S&P 500 en Power BI.
         # No participa en el ranking si no está incluido explícitamente en TICKERS.
@@ -857,6 +842,22 @@ def main():
             notes.append(f"Gemini empresas: {exc}")
             print(f"Gemini Company Opinions ERROR: {exc}")
 
+        # Un run puede terminar con avisos, pero no debe proclamarse completo
+        # si solo guarda tres opiniones de diez (caso observado en Railway).
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(DISTINCT ticker) AS n FROM asset_kpi_snapshot WHERE run_id=%s", (CURRENT_RUN_ID,))
+                snapshot_count = int(cur.fetchone()["n"])
+                cur.execute("SELECT COUNT(DISTINCT ticker) AS n FROM ai_asset_opinion WHERE run_id=%s", (CURRENT_RUN_ID,))
+                opinion_count = int(cur.fetchone()["n"])
+                cur.execute("SELECT COUNT(*) AS n FROM ai_recommendation WHERE run_id=%s", (CURRENT_RUN_ID,))
+                recommendation_count = int(cur.fetchone()["n"])
+        if snapshot_count != len(TICKERS):
+            notes.append(f"Snapshot parcial: {snapshot_count}/{len(TICKERS)}")
+        if opinion_count != len(TICKERS):
+            notes.append(f"Opiniones IA incompletas: {opinion_count}/{len(TICKERS)}")
+        if not recommendation_count:
+            notes.append("Opinión comparativa IA no disponible")
         status = "COMPLETED" if not notes else "COMPLETED_WITH_WARNINGS"
         finish_analysis_run(CURRENT_RUN_ID, status, " | ".join(notes)[:8000] if notes else None)
         print(f"Pipeline finalizado run={CURRENT_RUN_ID} status={status}")

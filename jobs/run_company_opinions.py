@@ -4,9 +4,12 @@ Integrar desde jobs/run_pipeline.py, dentro de main(), antes de finish_analysis_
 """
 
 import json
+import os
+import time
 
 from database.db import fetch_all, get_connection
 from ml.gemini_agent import GEMINI_MODEL, _client, enabled
+from ml.gemini_retry import generate_with_retry
 
 
 OPINION_SCHEMA = {
@@ -51,7 +54,7 @@ def _explain(client, asset):
         "(síntesis de 2 a 4 frases para Power BI). Devuelve JSON según el esquema. "
         f"\nINDICADORES:\n{data}"
     )
-    response = client.models.generate_content(
+    response = generate_with_retry(client,
         model=GEMINI_MODEL,
         contents=prompt,
         config={
@@ -104,14 +107,23 @@ def main(run_id):
     if not assets:
         print(f"Opiniones IA: sin activos en run={run_id}")
         return 0, 0
+    # En ejecuciones reanudadas solamente se vuelven a pedir opiniones faltantes.
+    present = {row["ticker"] for row in fetch_all(
+        "SELECT ticker FROM ai_asset_opinion WHERE run_id=%s", (run_id,)
+    )}
+    present.intersection_update({row["ticker"] for row in assets})
+    if len(present) >= total:
+        return len(present), total
     if not enabled():
         print("Opiniones IA: GEMINI_API_KEY no configurada")
-        return 0, total
+        return len(present), total
 
-    generated = 0
+    generated = len(present)
     with _client() as client:
         for asset in assets:
             ticker = asset["ticker"]
+            if ticker in present:
+                continue
             try:
                 result = _explain(client, asset)
                 _save(run_id, ticker, result)
@@ -119,4 +131,14 @@ def main(run_id):
                 print(f"Opinión IA por empresa: {ticker} OK")
             except Exception as exc:
                 print(f"Opinión IA por empresa: {ticker} ERROR: {exc}")
+            if generated < total:
+                time.sleep(max(0, float(os.getenv("GEMINI_BETWEEN_CALLS_SECONDS", "1.5"))))
     return generated, total
+
+
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description="Reintentar opiniones pendientes del mismo run")
+    parser.add_argument("--run-id", type=int, required=True)
+    run_id = parser.parse_args().run_id
+    print("Opiniones pendientes:", main(run_id))

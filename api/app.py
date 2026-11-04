@@ -6,6 +6,7 @@ from flask import Flask, jsonify, request
 
 from database.db import fetch_all, fetch_one
 from database.init_db import init_database
+from config.assets import DEFAULT_TICKERS, configured_tickers
 
 app = Flask(__name__)
 APP_NAME = os.getenv("APP_NAME", "Business Analytics - Inversiones a Largo Plazo")
@@ -58,6 +59,32 @@ def _json_rows(sql, params=None):
     return jsonify(json_safe(fetch_all(sql, params)))
 
 
+PUBLISHED_RUN_SQL = """
+    SELECT r.id AS run_id
+    FROM analysis_runs r
+    WHERE r.status IN ('COMPLETED', 'COMPLETED_WITH_WARNINGS')
+      AND r.total_assets > 0
+      AND (SELECT COUNT(DISTINCT s.ticker)
+           FROM asset_kpi_snapshot s WHERE s.run_id=r.id) = r.total_assets
+      AND (SELECT COUNT(DISTINCT o.ticker)
+           FROM ai_asset_opinion o WHERE o.run_id=r.id) = r.total_assets
+      AND EXISTS (SELECT 1 FROM ai_recommendation a WHERE a.run_id=r.id)
+    ORDER BY r.id DESC
+    LIMIT 1
+"""
+
+
+def _published_run_id():
+    """Publica solamente un conjunto completo del MISMO run_id."""
+    result = fetch_one(PUBLISHED_RUN_SQL)
+    return int(result["run_id"]) if result else None
+
+
+def _rows_for_published_run(sql):
+    run_id = _published_run_id()
+    return jsonify(json_safe(fetch_all(sql, (run_id,))) if run_id is not None else [])
+
+
 @app.get("/")
 def root():
     return jsonify(
@@ -81,6 +108,10 @@ def root():
                 "/api/dashboard/recommendation",
                 "/api/dashboard/runs",
                 "/api/dashboard/company-opinions",
+                "/api/dashboard/status",
+                "/api/dashboard/companies",
+                "/api/dashboard/yahoo-profiles",
+                "/api/dashboard/corporate-actions",
             ],
         }
     )
@@ -298,21 +329,17 @@ def decisions():
 
 @app.get("/api/ai-comment")
 def ai_comment():
-    """Compatibilidad: devuelve la recomendación Gemini del mejor activo del último run."""
+    """Alias histórico: entrega la recomendación general, NO ai_decision_comment."""
     denied = _analytics_guard()
     if denied:
         return denied
-    return _json_rows(
+    return _rows_for_published_run(
         """
         SELECT a.id,a.ticker,NULL AS decision_id,a.decision_label,a.final_score,
                a.summary,a.main_reason,a.positive_factors,a.risk_factors,
                a.model_comment,a.model_name,a.created_at
         FROM ai_recommendation a
-        INNER JOIN (
-            SELECT MAX(id) AS run_id
-            FROM analysis_runs
-            WHERE status IN ('COMPLETED','COMPLETED_WITH_WARNINGS')
-        ) r ON r.run_id=a.run_id
+        WHERE a.run_id=%s
         """
     )
 
@@ -323,15 +350,11 @@ def dashboard_assets():
     denied = _analytics_guard()
     if denied:
         return denied
-    return _json_rows(
+    return _rows_for_published_run(
         """
         SELECT s.*
         FROM asset_kpi_snapshot s
-        INNER JOIN (
-            SELECT MAX(id) AS run_id
-            FROM analysis_runs
-            WHERE status IN ('COMPLETED','COMPLETED_WITH_WARNINGS')
-        ) r ON r.run_id=s.run_id
+        WHERE s.run_id=%s
         ORDER BY s.ranking_position ASC, s.ticker ASC
         """
     )
@@ -343,15 +366,11 @@ def dashboard_recommendation():
     denied = _analytics_guard()
     if denied:
         return denied
-    return _json_rows(
+    return _rows_for_published_run(
         """
         SELECT a.*
         FROM ai_recommendation a
-        INNER JOIN (
-            SELECT MAX(id) AS run_id
-            FROM analysis_runs
-            WHERE status IN ('COMPLETED','COMPLETED_WITH_WARNINGS')
-        ) r ON r.run_id=a.run_id
+        WHERE a.run_id=%s
         """
     )
 
@@ -376,17 +395,97 @@ def dashboard_company_opinions():
     denied = _analytics_guard()
     if denied:
         return denied
-    return _json_rows(
+    return _rows_for_published_run(
         """
         SELECT o.run_id,o.ticker,o.summary,o.strengths,o.risks,
                o.model_comment,o.model_name,o.created_at
         FROM ai_asset_opinion o
-        INNER JOIN (
-            SELECT MAX(id) AS run_id
-            FROM analysis_runs
-            WHERE status IN ('COMPLETED','COMPLETED_WITH_WARNINGS')
-        ) r ON r.run_id=o.run_id
+        WHERE o.run_id=%s
         ORDER BY o.ticker
+        """
+    )
+
+
+@app.get("/api/dashboard/status")
+def dashboard_status():
+    """Distingue: última ejecución ≠ último conjunto publicable completo."""
+    denied = _analytics_guard()
+    if denied:
+        return denied
+    latest = fetch_one(
+        "SELECT id,status,total_assets,started_at,completed_at FROM analysis_runs ORDER BY id DESC LIMIT 1"
+    )
+    published = _published_run_id()
+    counts = None
+    if latest:
+        counts = fetch_one(
+            """
+            SELECT
+              (SELECT COUNT(DISTINCT ticker) FROM asset_kpi_snapshot WHERE run_id=%s) AS snapshots,
+              (SELECT COUNT(DISTINCT ticker) FROM ai_asset_opinion WHERE run_id=%s) AS opinions,
+              (SELECT COUNT(*) FROM ai_recommendation WHERE run_id=%s) AS recommendations
+            """, (latest["id"], latest["id"], latest["id"]),
+        )
+    result = {
+        "latest_run_id": latest["id"] if latest else None,
+        "latest_run_status": latest["status"] if latest else None,
+        "latest_expected_assets": latest["total_assets"] if latest else 0,
+        "latest_snapshots": int(counts["snapshots"]) if counts else 0,
+        "latest_company_opinions": int(counts["opinions"]) if counts else 0,
+        "latest_general_recommendations": int(counts["recommendations"]) if counts else 0,
+        "published_run_id": published,
+        "published_is_older": bool(latest and published and latest["id"] != published),
+        "configured_companies": len(configured_tickers()),
+        "dashboard_ready": published is not None,
+        "message": ("El dashboard usa el último run con todos sus datos y las opiniones IA"
+                    if published else "Todavía no hay un run con datos y opiniones IA completos"),
+    }
+    return jsonify(result)
+
+
+@app.get("/api/dashboard/companies")
+def dashboard_companies():
+    denied = _analytics_guard()
+    if denied:
+        return denied
+    return _rows_for_published_run(
+        """
+        SELECT ticker,company_name,ranking_position,final_score
+        FROM asset_kpi_snapshot WHERE run_id=%s
+        ORDER BY ranking_position,ticker
+        """
+    )
+
+
+@app.get("/api/dashboard/yahoo-profiles")
+def dashboard_yahoo_profiles():
+    denied = _analytics_guard()
+    if denied:
+        return denied
+    return _rows_for_published_run(
+        """
+        SELECT run_id,ticker,sector,industry,country,website,currency,
+               market_cap,trailing_pe,forward_pe,beta,dividend_yield,
+               fifty_two_week_high,fifty_two_week_low,average_volume,captured_at
+        FROM yahoo_company_profile WHERE run_id=%s ORDER BY ticker
+        """
+    )
+
+
+@app.get("/api/dashboard/corporate-actions")
+def dashboard_corporate_actions():
+    denied = _analytics_guard()
+    if denied:
+        return denied
+    return _rows_for_published_run(
+        """
+        SELECT a.ticker,a.event_date,a.event_type,a.event_value,a.source,a.fetched_at
+        FROM yahoo_corporate_actions a
+        WHERE EXISTS (
+            SELECT 1 FROM asset_kpi_snapshot s
+            WHERE s.run_id=%s AND s.ticker=a.ticker
+        )
+        ORDER BY a.ticker,a.event_date
         """
     )
 

@@ -1,4 +1,4 @@
--- SISTEMA DE INVERSIÓN V3 / POWER BI
+-- SISTEMA DE INVERSIÓN V4 / POWER BI / 10 EMPRESAS
 -- Primero: Modelado > Nueva tabla, una tabla por cada bloque siguiente.
 -- Las medidas debajo se crean UNA POR UNA en Modelado > Nueva medida.
 -- No crear relaciones desde SelectorEmpresa ni Periodos hacia otras tablas.
@@ -22,7 +22,8 @@ DATATABLE (
         { "1 año", 12, 3 },
         { "3 años", 36, 4 },
         { "5 años", 60, 5 },
-        { "Todo", 1200, 6 }
+        { "10 años", 120, 6 },
+        { "Todo", 1200, 7 }
     }
 )
 
@@ -214,3 +215,49 @@ RETURN IF ( ISBLANK ( T ) || ISBLANK ( Fin ), BLANK (),
 
 Fecha Actualizacion =
 CALCULATE ( MAX ( DashboardAssets[created_at] ), ALL ( DashboardAssets ) )
+
+-- Nuevas métricas Yahoo Finance (opcional: sin perfil se muestran en blanco).
+Capitalizacion Yahoo =
+VAR T = [Ticker Seleccionado]
+RETURN IF ( ISBLANK ( T ), BLANK (),
+    CALCULATE ( MAX ( YahooProfiles[market_cap] ), YahooProfiles[ticker] = T ) )
+
+PER Historico Yahoo =
+VAR T = [Ticker Seleccionado]
+RETURN IF ( ISBLANK ( T ), BLANK (),
+    CALCULATE ( MAX ( YahooProfiles[trailing_pe] ), YahooProfiles[ticker] = T ) )
+
+Beta Yahoo =
+VAR T = [Ticker Seleccionado]
+RETURN IF ( ISBLANK ( T ), BLANK (),
+    CALCULATE ( MAX ( YahooProfiles[beta] ), YahooProfiles[ticker] = T ) )
+
+Rendimiento Dividendo Yahoo =
+VAR T = [Ticker Seleccionado]
+RETURN IF ( ISBLANK ( T ), BLANK (),
+    CALCULATE ( MAX ( YahooProfiles[dividend_yield] ), YahooProfiles[ticker] = T ) )
+
+Sector Yahoo =
+VAR T = [Ticker Seleccionado]
+RETURN IF ( ISBLANK ( T ), "Seleccione una empresa",
+    COALESCE ( CALCULATE ( SELECTEDVALUE ( YahooProfiles[sector] ),
+        YahooProfiles[ticker] = T ), "No disponible" ) )
+
+Empresas En Dashboard =
+DISTINCTCOUNT ( DashboardAssets[ticker] )
+
+Opiniones IA Disponibles =
+DISTINCTCOUNT ( CompanyOpinions[ticker] )
+
+Estado Cobertura IA =
+FORMAT ( [Opiniones IA Disponibles], "0" ) & " / " &
+FORMAT ( [Empresas En Dashboard], "0" ) & " opiniones"
+
+Estado Publicacion =
+VAR Listo = SELECTEDVALUE ( DashboardStatus[dashboard_ready], FALSE () )
+VAR Ultimo = SELECTEDVALUE ( DashboardStatus[latest_run_id] )
+VAR Publicado = SELECTEDVALUE ( DashboardStatus[published_run_id] )
+RETURN IF ( NOT Listo, "Sin análisis integral publicado",
+    IF ( Ultimo <> Publicado,
+         "Mostrando última ejecución completa: " & FORMAT ( Publicado, "0" ),
+         "Análisis completo: " & FORMAT ( Publicado, "0" ) ) )

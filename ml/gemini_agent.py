@@ -1,9 +1,10 @@
 import json
 import os
 from google import genai
+from ml.gemini_retry import generate_with_retry
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 
 RECOMMENDATION_SCHEMA = {
     "type": "object",
@@ -64,7 +65,7 @@ REQUISITOS
 
     # Mantener vivo el cliente durante toda la petición evita el error client has been closed.
     with _client() as client:
-        response = client.models.generate_content(
+        response = generate_with_retry(client,
             model=GEMINI_MODEL,
             contents=prompt,
             config={

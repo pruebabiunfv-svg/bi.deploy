@@ -1,141 +1,178 @@
-# Sistema BI de Inversión V2 — KPI coherentes por empresa + Gemini 
+# InversIA V4 — inversiones a largo plazo, 10 empresas y Power BI
 
-## Actualización V3 — Power BI con opinión individual por empresa (04/11/2026)
+Proyecto Python + Flask + MySQL para Railway. Integra precios de Yahoo Finance,
+fundamentales SEC EDGAR, macro FRED, noticias GDELT, sentimiento FinBERT,
+XGBoost, backtesting y explicaciones Gemini. Las visualizaciones se construyen
+en Power BI Desktop utilizando los scripts `powerbi/`.
 
-- **Sí se mantiene Flask, MySQL, XGBoost, FinBERT y Gemini.** No cambia la arquitectura de despliegue.
-- El pipeline ahora ejecuta `jobs.run_company_opinions` dentro de `main()`, después de la opinión global y antes de cerrar `run_id`. Se corrigió el error de alcance `notes is not defined`.
-- Nueva tabla `ai_asset_opinion` (una fila por `run_id` y `ticker`) y endpoint `/api/dashboard/company-opinions`.
-- Power BI importa cuatro consultas principales: `DashboardAssets`, `AIRecommendation`, `CompanyOpinions`, `MarketHistory`. El archivo `powerbi/Measures.dax` fue sustituido por fórmulas interactivas V3.
-- Los filtros desconectados `SelectorEmpresa` y `Periodos` permiten actualizar tarjetas/histórico/opinión individual manteniendo el ranking global completo.
-- `BENCHMARK_TICKER=SPY` carga por separado el histórico de referencia si SPY no compite en `TICKERS`, sin alterar el ganador ni el número de empresas del ranking.
-- **El selector de período afecta a la curva histórica**, no al horizonte XGBoost. La opinión IA es una explicación ya generada para el run; seleccionar otra empresa no ejecuta Gemini de nuevo.
-- Instrucciones de construcción de la página y formato exacto en `powerbi/README.txt`. Validación estática en `tests/test_powerbi_integration.py`; requiere pruebas adicionales con Railway y Power BI Desktop.
+## Diez empresas del dashboard
 
+| Ticker | Empresa |
+|---|---|
+| AAPL | Apple |
+| MSFT | Microsoft |
+| NVDA | NVIDIA |
+| AMZN | Amazon |
+| GOOGL | Alphabet/Google |
+| META | Meta |
+| TSLA | Tesla |
+| NFLX | Netflix |
+| AMD | Advanced Micro Devices |
+| ORCL | Oracle |
 
-Esta versión corrige el problema de Power BI donde **Mejor activo**, **Ranking**, **Sentimiento**, **Backtesting** y otros KPI podían provenir de tickers o ejecuciones diferentes.
+`SPY` se guarda únicamente como benchmark del S&P 500 y **no** participa en el
+ranking de las diez empresas. `QQQ` tampoco figura como empresa seleccionable.
+El universo es configurable con `TICKERS`, pero debe contener exactamente diez
+símbolos diferentes; actualizar la variable existente en **Railway Worker**.
 
-## Cambio principal
+## Cambios de V4
 
-Cada ejecución del worker crea un `run_id` en `analysis_runs`. Al finalizar los modelos, se genera `asset_kpi_snapshot`, con **una fila consolidada por activo y por ejecución**. Esa tabla es la fuente principal del dashboard.
+1. Los cuatro endpoints centrales de Power BI comparten el **mismo** `run_id`.
+   Solo se publica un run `COMPLETED`/`COMPLETED_WITH_WARNINGS` que contenga
+   todos los snapshots, todas las opiniones individuales **y** la recomendación
+   general. Un run parcial, como el 31 con tres opiniones de siete, no sustituye
+   al último run íntegro, como el 30.
+2. `/api/dashboard/status` informa del último run, del publicado, recuentos,
+   publicación atrasada o aún no disponible. Nunca inventa opiniones.
+3. Reintentos limitados de Gemini ante HTTP 429/503; se puede recuperar
+   manualmente un run con opiniones pendientes sin duplicar filas.
+4. Bloqueo MySQL `GET_LOCK()` para impedir dos workers concurrentes.
+5. Auditoría JSON **acotada por defecto**: grandes respuestas SEC/Yahoo se
+   representan por tamaño/hash, mientras los datos normalizados se conservan
+   completos. No se eliminan filas históricas automáticamente.
+6. Yahoo Finance: además de OHLCV diario hasta 10 años, se obtienen perfiles
+   empresariales, capitalización, múltiplos, beta, dividendos y splits mediante
+   `yfinance`. Si falla su cuota, el pipeline continúa con advertencias. El
+   histórico de precios mantiene respaldo `yfinance` si falla el chart HTTP.
+7. Nuevos archivos M/DAX para perfiles y acciones corporativas.
 
-Flujo:
+## Tablas nuevas
 
-```text
-APIs -> tablas RAW/normalizadas -> XGBoost/FinBERT -> Walk-Forward/Backtesting
-     -> Decision Engine -> asset_kpi_snapshot -> Power BI
-                                      |
-                                      -> mejor final_score -> Gemini -> ai_recommendation
+- `yahoo_company_profile`: perfil y valoración **por `run_id` y ticker**.
+- `yahoo_corporate_actions`: dividendos y splits históricos por ticker/fecha.
+
+Todas las tablas anteriores, su histórico y claves permanecen intactos.
+`database.init_db` crea solo lo que falte e incorpora las migraciones existentes.
+
+## Arquitectura
+
+```
+Yahoo Finance (OHLCV, perfiles, dividendos, splits)   SEC EDGAR   FRED   GDELT
+             |                                           |         |      |
+             +-----------> MySQL (datos normalizados y auditoría acotada) <--+
+                                       |
+                             XGBoost + FinBERT
+                                       |
+                       Walk-Forward y motor de decisiones
+                                       |
+                            asset_kpi_snapshot
+                                       |
+                          +------------+-----------+
+                          |                        |
+                  Gemini por empresa        Gemini comparativo
+                   ai_asset_opinion          ai_recommendation
+                          |                        |
+                          +------------+-----------+
+                                       |
+                        Publicación íntegra por run_id
+                                       |
+                              Flask API / Power BI
 ```
 
-## Tablas nuevas / mejoradas
+## Instalación local
 
-- `analysis_runs`: identifica cada ejecución completa.
-- `api_raw_payload`: conserva JSON original de Yahoo, FRED, SEC y GDELT para auditoría.
-- `sec_company_facts`: almacena conceptos XBRL de SEC con mayor granularidad.
-- `asset_kpi_snapshot`: una fila por empresa con todos los KPI de la misma ejecución.
-- `ai_recommendation`: comentario Gemini **solo del mejor activo** del mismo run.
-- `market_data`: agrega `adj_close`, `currency`, `exchange_name`.
-- `economic_indicators`: agrega metadatos FRED (`realtime_*`, `units`, `frequency`).
-- `financial_news`: agrega metadatos GDELT (`domain`, `language`, `source_country`, `social_image`, `seen_at`).
-- históricos ML (`prediction_history`, `backtesting`, `model_metrics`, `asset_ranking`, `decision_log`) incluyen `run_id`.
+Necesita Python 3.12, MySQL y conexión a Internet para las fuentes externas.
 
-## Regla de consistencia
-
-El orden final se calcula exclusivamente con:
-
-```text
-asset_kpi_snapshot.final_score DESC
+```bash
+python -m venv .venv
+# Activar el entorno para su sistema operativo.
+pip install -r requirements-worker.txt
+python -m database.init_db
+python -m jobs.run_pipeline
 ```
 
-Por tanto:
+Para servir la API:
 
-```text
-ranking_position = 1 <=> is_best = 1 <=> Mejor Activo IA
+```bash
+pip install -r requirements-api.txt
+python -m api.app
 ```
 
-Gemini **no vuelve a elegir** el activo. Lee todos los activos del mismo `run_id` y explica por qué el #1 quedó por encima del resto.
-
-## Power BI recomendado
-
-Use principalmente:
-
-- `/api/dashboard/assets` -> consulta `DashboardAssets`
-- `/api/dashboard/recommendation` -> `AIRecommendation`
-- `/api/market-history` -> `MarketHistory`
-- `/api/dashboard/runs` -> opcional, auditoría
-
-Los endpoints anteriores se conservan para auditoría/compatibilidad, pero no deben mezclarse para construir las tarjetas actuales.
-
-En `powerbi/`:
-
-- `PowerQuery_DashboardAssets.m`
-- `PowerQuery_AIRecommendation.m`
-- `PowerQuery_MarketHistory.m`
-- `PowerQuery_AnalysisRuns.m`
-- `Measures.dax`
-
-`Measures.dax` incluye `DimActivo`, medidas por empresa seleccionada y medidas globales del mejor activo.
-
-### Modelo
-
-```text
-DimActivo[Ticker] 1 -> * DashboardAssets[ticker]
-DimActivo[Ticker] 1 -> * MarketHistory[ticker]
-```
-
-Use `DimActivo[Empresa]` como slicer. Cuando seleccione Microsoft, todos los KPI de empresa mostrarán Microsoft. El panel global de IA seguirá mostrando el mejor activo del sistema.
+Copie las variables de `.env.example` a su entorno de manera segura. Python no
+carga `.env` automáticamente: use el panel de Variables de Railway o exporte
+las variables antes de ejecutar. Nunca publique credenciales reales.
 
 ## Railway
 
-### API `bi.deploy`
+Lea [docs/RAILWAY.md](docs/RAILWAY.md). Asegúrese de establecer en el worker:
 
 ```env
-APP_DATABASE=inversion_bi
-MYSQLHOST=${{MySQL.RAILWAY_PRIVATE_DOMAIN}}
-MYSQLPORT=3306
-MYSQLUSER=root
-MYSQLPASSWORD=${{MySQL.MYSQL_ROOT_PASSWORD}}
-PUBLIC_ANALYTICS=true
+TICKERS=AAPL,MSFT,NVDA,AMZN,GOOGL,META,TSLA,NFLX,AMD,ORCL
+BENCHMARK_TICKER=SPY
+MARKET_PERIOD=10y
+YAHOO_ENRICHMENT_ENABLED=true
+RAW_AUDIT_MODE=bounded
+RAW_PAYLOAD_MAX_BYTES=65536
+GEMINI_MODEL=gemini-2.5-flash
 ```
 
-Pre-deploy:
+La variable `GEMINI_MODEL` acepta otro ID válido que su clave permita. La cuota,
+errores 429 y acceso varían por modelo/proyecto; no se garantiza un resultado
+en todas las llamadas. Los datos Yahoo/yfinance no constituyen un feed con SLA.
+
+## Recuperación de opiniones parciales
+
+Una vez corregidas las cuotas de Gemini, puede volver a solicitar solo las
+opiniones faltantes de una ejecución anterior, con el mismo `run_id`:
 
 ```bash
-python -m database.init_db
+python -m jobs.run_company_opinions --run-id 31
+python -m jobs.run_best_asset_agent --run-id 31
 ```
 
-### Worker `inversion_worker`
+Si esa ejecución representa solo siete activos, sigue siendo histórica; el
+primer run de diez deberá generarse ejecutando nuevamente todo el pipeline.
+No asigne `run_id` arbitrariamente a los ocho comentarios históricos `NULL`.
 
-```env
-RAILWAY_DOCKERFILE_PATH=Dockerfile.worker
-APP_DATABASE=inversion_bi
-MYSQLHOST=${{MySQL.RAILWAY_PRIVATE_DOMAIN}}
-MYSQLPORT=3306
-MYSQLUSER=root
-MYSQLPASSWORD=${{MySQL.MYSQL_ROOT_PASSWORD}}
+## Endpoints principales
 
-TICKERS=AAPL,MSFT,NVDA,AMZN,GOOGL,SPY,QQQ
-MARKET_PERIOD=10y
-PREDICTION_HORIZON_DAYS=126
-NEWS_PER_TICKER=25
-WALK_FORWARD_FOLDS=4
-GDELT_DELAY_SECONDS=3
+| Endpoint | Uso |
+|---|---|
+| `/api/dashboard/status` | Run reciente y publicado, cobertura IA |
+| `/api/dashboard/assets` | KPI y ranking, snapshot íntegro |
+| `/api/dashboard/company-opinions` | Una opinión Gemini por empresa |
+| `/api/dashboard/recommendation` | Opinión comparativa global |
+| `/api/ai-comment` | Alias compatible de la recomendación global |
+| `/api/dashboard/companies` | Lista de las empresas publicadas |
+| `/api/dashboard/yahoo-profiles` | Datos bursátiles adicionales |
+| `/api/dashboard/corporate-actions` | Dividendos y splits históricos |
+| `/api/market-history` | Histórico de precios y benchmark |
+| `/api/dashboard/runs` | Auditoría de ejecuciones |
 
-FRED_API_KEY=...
-SEC_USER_AGENT=ProyectoUniversitario/1.0 correo@example.com
-HF_TOKEN=...
-HF_MODEL=ProsusAI/finbert
-HF_API_BASE=https://router.huggingface.co/hf-inference/models
-GEMINI_API_KEY=...
-GEMINI_MODEL=gemini-3.8-flash
+Power BI importa las consultas M desde `powerbi/` y las medidas DAX de
+`powerbi/Measures.dax`; vea [powerbi/README.txt](powerbi/README.txt).
+
+## Diagnóstico del almacenamiento de Railway
+
+El error MySQL 1114 (`decision_log is full`) puede significar que falta espacio
+en el volumen **aunque la tabla `decision_log` ocupe unos pocos KB**.
+En el despliegue reportado el volumen era 500 MB. Revise **MySQL Volume →
+Metrics**; considere ampliarlo antes de reejecutar pipelines grandes.
+
+El cambio de auditoría reduce el **crecimiento futuro**, pero **no libera** los
+~116 MB que los registros `api_raw_payload` antiguos ya ocupaban. Antes de
+archivar o eliminar información, haga un backup y evalúe una política formal de
+retención; el proyecto no borra los datos existentes.
+
+## Pruebas
+
+```bash
+python -m unittest discover -s tests -v
+python -m compileall -q api config database jobs ml tests
 ```
 
-El pipeline ahora controla 429 de GDELT con reintentos y espera configurable.
+Estas pruebas no requieren servicios externos; el funcionamiento end-to-end
+requiere MySQL, cuotas activas de Yahoo/SEC/HF/Gemini, Railway y Power BI Desktop.
 
-## Validación
-
-Después del deploy ejecute `docs/SQL_VERIFY_KPI.sql`. Debe existir exactamente un `is_best=1` en el último run y `ai_recommendation.ticker` debe coincidir con ese ticker.
-
-## Seguridad
-
-No incluya claves reales en GitHub. Mantenga las credenciales en Railway Variables y rote cualquier clave que se haya expuesto previamente.
+> Los resultados de modelos son estimaciones académicas e históricas, no
+> recomendaciones financieras personalizadas ni garantías de rentabilidad.

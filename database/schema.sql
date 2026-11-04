@@ -53,6 +53,42 @@ CREATE TABLE IF NOT EXISTS market_data (
   INDEX idx_market_ticker_date (ticker, price_date)
 );
 
+-- Información adicional de Yahoo Finance por ejecución, sin mezclar snapshots.
+CREATE TABLE IF NOT EXISTS yahoo_company_profile (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  run_id BIGINT NOT NULL,
+  ticker VARCHAR(15) NOT NULL,
+  sector VARCHAR(150),
+  industry VARCHAR(150),
+  country VARCHAR(100),
+  website VARCHAR(400),
+  currency VARCHAR(10),
+  market_cap BIGINT,
+  trailing_pe DECIMAL(18,6),
+  forward_pe DECIMAL(18,6),
+  beta DECIMAL(12,6),
+  dividend_yield DECIMAL(12,8),
+  fifty_two_week_high DECIMAL(18,6),
+  fifty_two_week_low DECIMAL(18,6),
+  average_volume BIGINT,
+  captured_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_yahoo_profile_run_ticker (run_id, ticker),
+  INDEX idx_yahoo_profile_ticker (ticker, run_id)
+);
+
+-- Dividendos y splits históricos de Yahoo Finance. Se almacena una sola vez por evento.
+CREATE TABLE IF NOT EXISTS yahoo_corporate_actions (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  ticker VARCHAR(15) NOT NULL,
+  event_date DATE NOT NULL,
+  event_type VARCHAR(20) NOT NULL,
+  event_value DECIMAL(24,10) NOT NULL,
+  source VARCHAR(30) NOT NULL DEFAULT 'Yahoo Finance',
+  fetched_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_yahoo_action (ticker, event_date, event_type),
+  INDEX idx_yahoo_action_date (ticker, event_date)
+);
+
 CREATE TABLE IF NOT EXISTS economic_indicators (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   series_id VARCHAR(50) NOT NULL,

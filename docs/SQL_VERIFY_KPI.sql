@@ -1,5 +1,6 @@
 USE inversion_bi;
 
+-- Consulta histórica compatible. La versión integral está en SQL_VERIFY_V4.sql.
 -- Últimas ejecuciones
 SELECT id, started_at, completed_at, status, market_period, horizon_days, total_assets, notes
 FROM analysis_runs
@@ -8,9 +9,13 @@ LIMIT 10;
 
 -- Snapshot semántico usado por Power BI: debe tener una fila por ticker.
 SET @last_run := (
-    SELECT MAX(id)
-    FROM analysis_runs
-    WHERE status IN ('COMPLETED','COMPLETED_WITH_WARNINGS')
+    SELECT r.id FROM analysis_runs r
+    WHERE r.status IN ('COMPLETED','COMPLETED_WITH_WARNINGS')
+      AND r.total_assets > 0
+      AND (SELECT COUNT(DISTINCT s.ticker) FROM asset_kpi_snapshot s WHERE s.run_id=r.id)=r.total_assets
+      AND (SELECT COUNT(DISTINCT o.ticker) FROM ai_asset_opinion o WHERE o.run_id=r.id)=r.total_assets
+      AND EXISTS (SELECT 1 FROM ai_recommendation a WHERE a.run_id=r.id)
+    ORDER BY r.id DESC LIMIT 1
 );
 
 SELECT @last_run AS latest_dashboard_run;

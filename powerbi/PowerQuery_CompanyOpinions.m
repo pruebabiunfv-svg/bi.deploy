@@ -1,5 +1,5 @@
 let
-    // Misma API que DashboardAssets: solo opiniones del último run completado.
+    // Misma publicación que DashboardAssets: solo el último run íntegro con IA.
     BaseUrl = "https://bideploy-production.up.railway.app",
     Source = Json.Document(Web.Contents(BaseUrl, [RelativePath="api/dashboard/company-opinions"])),
     Tabla = if List.IsEmpty(Source) then

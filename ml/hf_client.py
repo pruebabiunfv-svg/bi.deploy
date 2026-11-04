@@ -1,4 +1,5 @@
 import os
+import time
 import requests
 
 HF_TOKEN = os.getenv("HF_TOKEN", "")
@@ -14,12 +15,24 @@ def analyze_sentiment(text):
         raise RuntimeError("HF_TOKEN no configurado")
 
     url = f"{HF_API_BASE}/{HF_MODEL}"
-    response = requests.post(
-        url,
-        headers={"Authorization": f"Bearer {HF_TOKEN}"},
-        json={"inputs": text[:4000]},
-        timeout=60,
-    )
+    attempts = max(1, int(os.getenv("HF_MAX_ATTEMPTS", "3")))
+    response = None
+    for attempt in range(attempts):
+        response = requests.post(
+            url,
+            headers={"Authorization": f"Bearer {HF_TOKEN}"},
+            json={"inputs": text[:4000]}, timeout=60,
+        )
+        if response.status_code not in {429, 500, 502, 503, 504}:
+            break
+        if attempt + 1 < attempts:
+            retry_after = response.headers.get("Retry-After", "")
+            try:
+                delay = max(1.0, min(float(retry_after), 60.0))
+            except (ValueError, TypeError):
+                delay = min(60.0, 3.0 * (2 ** attempt))
+            print(f"FinBERT HTTP {response.status_code}: espera {delay:.1f}s")
+            time.sleep(delay)
     response.raise_for_status()
     data = response.json()
 

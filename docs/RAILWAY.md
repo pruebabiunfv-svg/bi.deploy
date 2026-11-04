@@ -1,12 +1,12 @@
-# Railway — versión V2
+# Railway — despliegue de InversIA V4
 
-Servicios actuales recomendados:
+## Componentes
 
-- `MySQL`: persistencia.
-- `bi.deploy`: API Flask/Gunicorn.
-- `inversion_worker`: ETL, modelos, snapshot KPI y Gemini.
+1. **MySQL:** persistencia en volumen. Haga backup desde `Backups`.
+2. **bi.deploy:** API Flask (`Dockerfile`). Healthcheck `/api/health`.
+3. **inversion_worker:** trabajo pesado (`Dockerfile.worker`); sin dominio público.
 
-## MySQL / red privada
+En ambos servicios use las variables de MySQL de Railway, por ejemplo:
 
 ```env
 APP_DATABASE=inversion_bi
@@ -16,89 +16,83 @@ MYSQLUSER=root
 MYSQLPASSWORD=${{MySQL.MYSQL_ROOT_PASSWORD}}
 ```
 
-No configure `ALLOW_LOCAL_MYSQL=true` en Railway. La V2 falla explícitamente si falta `MYSQLHOST`, evitando conectarse por error a `127.0.0.1`.
+No use `ALLOW_LOCAL_MYSQL=true` en Railway. No copie claves a GitHub.
 
-## bi.deploy
+## API
 
-- Dockerfile: `Dockerfile`
-- Pre-deploy: `python -m database.init_db`
-- Custom Start Command: vacío
-- Healthcheck: `/api/health`
+- Dockerfile: `Dockerfile` (en el repositorio raíz).
+- Pre-deploy: `python -m database.init_db` (migraciones idempotentes).
+- Start: predeterminado (`start.sh`).
+- `PUBLIC_ANALYTICS=true` para lectura pública de los endpoints del tablero;
+  si el informe es privado, establezca `PUBLIC_ANALYTICS=false`, configure
+  `PBI_API_KEY` y envíe la clave en cabecera X-API-Key desde Power BI.
 
-```env
-APP_NAME=Business Analytics - Inversiones a Largo Plazo
-APP_DATABASE=inversion_bi
-MYSQLHOST=${{MySQL.RAILWAY_PRIVATE_DOMAIN}}
-MYSQLPORT=3306
-MYSQLUSER=root
-MYSQLPASSWORD=${{MySQL.MYSQL_ROOT_PASSWORD}}
-PUBLIC_ANALYTICS=true
-```
+## Worker
 
-## inversion_worker
-
-- Mismo repo GitHub.
-- `RAILWAY_DOCKERFILE_PATH=Dockerfile.worker`
-- Sin dominio público.
-- Pre-deploy y Custom Start vacíos.
+- Variable `RAILWAY_DOCKERFILE_PATH=Dockerfile.worker`.
+- No programar varios workers simultáneos. El código usa `GET_LOCK()` y
+  rechaza una segunda ejecución mientras la primera esté activa.
+- Ejecute por demanda o mediante programación externa, considerando el tiempo
+  y la cuota de 10 empresas. No lance continuamente en cada reinicio si no
+  desea repetir solicitudes/cargos.
 
 ```env
-APP_DATABASE=inversion_bi
-MYSQLHOST=${{MySQL.RAILWAY_PRIVATE_DOMAIN}}
-MYSQLPORT=3306
-MYSQLUSER=root
-MYSQLPASSWORD=${{MySQL.MYSQL_ROOT_PASSWORD}}
-TICKERS=AAPL,MSFT,NVDA,AMZN,GOOGL,SPY,QQQ
+TICKERS=AAPL,MSFT,NVDA,AMZN,GOOGL,META,TSLA,NFLX,AMD,ORCL
 BENCHMARK_TICKER=SPY
 MARKET_PERIOD=10y
+YAHOO_ENRICHMENT_ENABLED=true
+RAW_AUDIT_MODE=bounded
+RAW_PAYLOAD_MAX_BYTES=65536
 PREDICTION_HORIZON_DAYS=126
-NEWS_PER_TICKER=25
+NEWS_PER_TICKER=15
+FINBERT_MAX_NEW_PER_TICKER=6
+HF_MAX_ATTEMPTS=3
 WALK_FORWARD_FOLDS=4
 GDELT_DELAY_SECONDS=3
-FRED_API_KEY=...
-SEC_USER_AGENT=ProyectoUniversitario/1.0 correo@example.com
-HF_TOKEN=...
-HF_MODEL=ProsusAI/finbert
-HF_API_BASE=https://router.huggingface.co/hf-inference/models
-GEMINI_API_KEY=...
-GEMINI_MODEL=gemini-3.8-flash
+GEMINI_MAX_ATTEMPTS=3
+GEMINI_RETRY_BASE_SECONDS=4
+GEMINI_BETWEEN_CALLS_SECONDS=1.5
+GEMINI_MODEL=gemini-2.5-flash
 ```
 
-## Pipeline V2
+Adicionalmente, configure `GEMINI_API_KEY`, `HF_TOKEN`, `FRED_API_KEY` si
+dispone de ellos y un `SEC_USER_AGENT` propio con contacto real. No se incluyen
+claves en el ZIP.
 
-1. Crea `analysis_runs.run_id`.
-2. Guarda datos raw/normalizados de APIs.
-3. XGBoost y `prediction_history` con `run_id`.
-4. Walk-Forward y `model_metrics` con `run_id`.
-5. Backtesting y drawdown con `run_id`.
-6. Decision Engine con `run_id`.
-7. Construye `asset_kpi_snapshot`, una fila por empresa.
-8. Recalcula ranking por `final_score`.
-9. Gemini explica solamente `is_best=1` comparándolo con los demás.
-10. Gemini genera además una opinión para cada empresa y la guarda en `ai_asset_opinion`.
-11. Cierra el run como `COMPLETED` o `COMPLETED_WITH_WARNINGS`.
+Si Railway tiene todavía `TICKERS=...SPY,QQQ`, **cámbielo** por el listado de
+diez empresas. Las variables existentes tienen prioridad sobre el default.
 
-## Power BI
+## Comprobación tras el despliegue
 
-Usar:
+1. Cree/actualice tablas con `python -m database.init_db`.
+2. Ejecute **una sola vez** el worker para las diez empresas.
+3. Consulte `/api/dashboard/runs` y `/api/dashboard/status`.
+4. El estado `dashboard_ready=true` y `latest_expected_assets=10` con
+   `latest_company_opinions=10` confirma un snapshot íntegro reciente.
+5. Si hubo cuota Gemini, el último publicado puede ser más antiguo;
+   `published_is_older=true` lo señala. No significa que se hayan perdido datos.
+6. Revise los endpoints `/api/dashboard/assets`, `.../company-opinions` y
+   `.../recommendation`; todos deberán contener **el mismo** `run_id`.
+7. Actualice Power BI Desktop / servicio según su política de actualización.
 
-- `/api/dashboard/assets`
-- `/api/dashboard/recommendation`
-- `/api/dashboard/company-opinions`
-- `/api/market-history`
-- `/api/dashboard/runs` (opcional)
+## Volumen MySQL y datos existentes
 
-Con `PUBLIC_ANALYTICS=true`: autenticación **Anónimo**.
+- MySQL Volume → `Metrics`: ver uso real; `Settings` → `Live resize`: ampliar
+  capacidad si se acerca al máximo (con backup previo).
+- `RAW_AUDIT_MODE=bounded` evita nuevo crecimiento excesivo de JSON raw, sin
+  borrar los históricos. Normalización Yahoo/SEC se conserva.
+- **No ejecutar TRUNCATE, DROP ni Wipe Volume** sin exportación, validación y
+  autorización expresa. SQL de verificación solo lectura en `SQL_VERIFY_V4.sql`.
 
-### Actualización V3
+## Recuperación de opiniones
 
-El nuevo endpoint aparece en el listado de `/` y devuelve una fila por ticker del
-último `run_id` completado. Tras desplegar el nuevo código, **ejecute el worker**;
-publicar Flask por sí solo no genera opiniones. Luego actualice Power BI.
-Si el endpoint responde `[]` pero `/api/dashboard/assets` tiene filas, compruebe
-`GEMINI_API_KEY`, `GEMINI_MODEL`, los logs del worker y la cuota disponible.
+Para un run incompleto por cuota Gemini y ya registrado en MySQL:
 
-Para el informe Power BI use únicamente las consultas/medidas V3 de `powerbi/README.txt`.
-Si desea las siete acciones de la imagen sin ETFs en el ranking, configure
-`TICKERS=GOOGL,AMZN,AAPL,NVDA,META,MSFT,TSLA` y deje `BENCHMARK_TICKER=SPY`:
-SPY se carga solo como serie de referencia y no compite en el ranking.
+```bash
+python -m jobs.run_company_opinions --run-id 31
+python -m jobs.run_best_asset_agent --run-id 31
+```
+
+El comando solo genera tickers faltantes, usando la clave del worker. La
+recomendación general puede reintentarse por separado con el segundo comando.
+Ambos usan los datos históricos ya guardados para el `run_id` especificado.

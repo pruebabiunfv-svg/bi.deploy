@@ -1,5 +1,29 @@
 import json
+import hashlib
+import os
+from functools import wraps
 from database.db import get_connection
+
+
+def single_flight_pipeline(func):
+    """Bloqueo de sesión MySQL, liberado al terminar o cerrarse la conexión."""
+    @wraps(func)
+    def wrapped(*args, **kwargs):
+        from database.init_db import init_database
+
+        init_database()
+        with get_connection() as lock_connection:
+            with lock_connection.cursor() as cur:
+                cur.execute("SELECT GET_LOCK(%s, 0) AS acquired", ("inversia_pipeline",))
+                lock = cur.fetchone()
+                if int(lock["acquired"] or 0) != 1:
+                    raise RuntimeError("Otra ejecución de InversIA ya está activa; no se inicia otra")
+            try:
+                return func(*args, **kwargs)
+            finally:
+                with lock_connection.cursor() as cur:
+                    cur.execute("SELECT RELEASE_LOCK(%s)", ("inversia_pipeline",))
+    return wrapped
 
 
 def start_analysis_run(market_period, horizon_days, model_version, total_assets):
@@ -30,10 +54,29 @@ def finish_analysis_run(run_id, status='COMPLETED', notes=None):
 
 
 def save_raw_payload(run_id, source_name, ticker, endpoint, request_parameters, payload, http_status):
-    """Best-effort audit storage. It must never stop the analytical pipeline."""
+    """Auditoría acotada: evita guardar SEC/GDELT gigantes en MySQL (500 MB).
+
+    RAW_AUDIT_MODE=bounded (por defecto) conserva cargas pequeñas y reemplaza
+    las grandes por metadatos verificables. ``full`` es opt-in; ``none`` omite.
+    Nunca elimina automáticamente registros existentes.
+    """
+    mode = os.getenv("RAW_AUDIT_MODE", "bounded").lower().strip()
+    if mode == "none":
+        return
     try:
         params_json = json.dumps(request_parameters or {}, ensure_ascii=False, default=str)
         payload_json = json.dumps(payload, ensure_ascii=False, default=str)
+        max_bytes = max(1024, int(os.getenv("RAW_PAYLOAD_MAX_BYTES", "65536")))
+        size = len(payload_json.encode("utf-8"))
+        if mode != "full" and size > max_bytes:
+            payload_json = json.dumps({
+                "_audit_mode": "bounded",
+                "truncated": True,
+                "original_size_bytes": size,
+                "sha256": hashlib.sha256(payload_json.encode("utf-8")).hexdigest(),
+                "top_level_keys": list(payload)[:30] if isinstance(payload, dict) else [],
+                "note": "Datos detallados normalizados en tablas del pipeline",
+            }, ensure_ascii=False)
         with get_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(

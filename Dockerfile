@@ -11,6 +11,7 @@ RUN pip install --no-cache-dir -r requirements-api.txt
 
 COPY api ./api
 COPY database ./database
+COPY config ./config
 COPY ml ./ml
 COPY start.sh ./start.sh
 RUN chmod +x /app/start.sh

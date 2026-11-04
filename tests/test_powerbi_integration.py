@@ -67,6 +67,38 @@ class IntegrationStructureTests(unittest.TestCase):
         self.assertIn('BENCHMARK_TICKER not in TICKERS', source)
         self.assertIn('load_yahoo(BENCHMARK_TICKER)', source)
 
+    def test_publication_requires_complete_kpis_opinions_and_general_ia(self):
+        api = (ROOT / "api/app.py").read_text(encoding="utf-8")
+        self.assertIn('COUNT(DISTINCT s.ticker)', api)
+        self.assertIn('COUNT(DISTINCT o.ticker)', api)
+        self.assertIn('EXISTS (SELECT 1 FROM ai_recommendation', api)
+        for endpoint in ["status", "yahoo-profiles", "corporate-actions", "companies"]:
+            self.assertIn(f'/api/dashboard/{endpoint}', api)
+
+    def test_yahoo_migration_and_ten_companies(self):
+        ddl = (ROOT / "database/schema.sql").read_text(encoding="utf-8")
+        self.assertIn("CREATE TABLE IF NOT EXISTS yahoo_company_profile", ddl)
+        self.assertIn("CREATE TABLE IF NOT EXISTS yahoo_corporate_actions", ddl)
+        sys.path.insert(0, str(ROOT))
+        try:
+            from config.assets import DEFAULT_TICKERS, SEC_CIK
+        finally:
+            sys.path.remove(str(ROOT))
+        self.assertEqual(len(DEFAULT_TICKERS), 10)
+        self.assertNotIn("SPY", DEFAULT_TICKERS)
+        self.assertNotIn("QQQ", DEFAULT_TICKERS)
+        self.assertTrue(all(t in SEC_CIK for t in DEFAULT_TICKERS))
+        docker = (ROOT / "Dockerfile.worker").read_text(encoding="utf-8")
+        self.assertIn("COPY config ./config", docker)
+        req = (ROOT / "requirements-worker.txt").read_text(encoding="utf-8")
+        self.assertIn("yfinance", req)
+
+    def test_raw_payload_bounded(self):
+        source = (ROOT / "database/audit.py").read_text(encoding="utf-8")
+        self.assertIn('RAW_AUDIT_MODE', source)
+        self.assertIn('original_size_bytes', source)
+        self.assertIn('single_flight_pipeline', source)
+
 
 class CompanyOpinionTests(unittest.TestCase):
     def test_generates_and_saves_company_specific_opinion(self):
@@ -117,7 +149,7 @@ class CompanyOpinionTests(unittest.TestCase):
                 return False
 
         db = types.ModuleType("database.db")
-        db.fetch_all = lambda sql, args: [sample]
+        db.fetch_all = lambda sql, args: ([] if "SELECT ticker FROM ai_asset_opinion" in sql else [sample])
         db.get_connection = FakeConnection
 
         gemini = types.ModuleType("ml.gemini_agent")
