@@ -1,8 +1,17 @@
 let
     BaseUrl = "https://bideploy-production.up.railway.app",
     Source = Json.Document(Web.Contents(BaseUrl, [RelativePath="api/dashboard/assets"])),
-    Tabla = if List.Count(Source)=0 then #table({}, {}) else Table.FromRecords(Source),
-    Fechas = if Table.IsEmpty(Tabla) then Tabla else Table.TransformColumns(
+    // Conservar el esquema incluso si el pipeline todavía no tiene snapshots.
+    Tabla = if List.IsEmpty(Source) then #table({
+        "id", "run_id", "ticker", "company_name", "market_date", "created_at",
+        "close_price", "probability_favorable", "predicted_class",
+        "sentiment_score", "sentiment_label", "positive_score", "neutral_score",
+        "negative_score", "news_count", "backtesting_return", "benchmark_return",
+        "max_drawdown", "hit_rate", "trades_count", "accuracy", "precision_score",
+        "recall_score", "f1_score", "roc_auc", "ranking_score", "final_score",
+        "ranking_position", "decision_label", "is_best"
+    }, {}) else Table.FromRecords(Source),
+    Fechas = Table.TransformColumns(
         Tabla,
         {
             {"market_date", each if _=null then null else Date.FromText(Text.Start(Text.From(_),10), [Format="yyyy-MM-dd", Culture="en-US"]), type date},
@@ -11,7 +20,7 @@ let
         null,
         MissingField.Ignore
     ),
-    Tipos = if Table.IsEmpty(Fechas) then Fechas else Table.TransformColumnTypes(
+    Tipos = Table.TransformColumnTypes(
         Fechas,
         {
             {"id", Int64.Type}, {"run_id", Int64.Type}, {"ticker", type text}, {"company_name", type text},

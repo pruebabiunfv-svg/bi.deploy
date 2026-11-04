@@ -1,5 +1,5 @@
 let
-    BaseUrl = "https://TU-API.up.railway.app",
+    BaseUrl = "https://bideploy-production.up.railway.app",
     Source = Json.Document(Web.Contents(BaseUrl, [RelativePath="api/ranking"])),
     Tabla = Table.FromRecords(Source),
     Fecha = Table.TransformColumns(Tabla,{

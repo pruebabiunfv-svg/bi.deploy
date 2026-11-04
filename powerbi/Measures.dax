@@ -1,92 +1,216 @@
--- MODELO V2: todos los KPI por empresa salen de DashboardAssets.
--- Cree un slicer con DimActivo[Empresa] o DimActivo[Ticker].
+-- SISTEMA DE INVERSIÓN V3 / POWER BI
+-- Primero: Modelado > Nueva tabla, una tabla por cada bloque siguiente.
+-- Las medidas debajo se crean UNA POR UNA en Modelado > Nueva medida.
+-- No crear relaciones desde SelectorEmpresa ni Periodos hacia otras tablas.
 
-DimActivo =
-DISTINCT(
-    SELECTCOLUMNS(
+SelectorEmpresa =
+DISTINCT (
+    SELECTCOLUMNS (
         DashboardAssets,
         "Ticker", DashboardAssets[ticker],
-        "Empresa", DashboardAssets[company_name]
+        "Empresa", COALESCE ( DashboardAssets[company_name], DashboardAssets[ticker] )
+            & " (" & DashboardAssets[ticker] & ")"
     )
 )
 
--- Relación: DimActivo[Ticker] (1) -> DashboardAssets[ticker] (*)
--- Relación: DimActivo[Ticker] (1) -> MarketHistory[ticker] (*)
+Periodos =
+DATATABLE (
+    "Periodo", STRING, "Meses", INTEGER, "Orden", INTEGER,
+    {
+        { "3 meses", 3, 1 },
+        { "6 meses", 6, 2 },
+        { "1 año", 12, 3 },
+        { "3 años", 36, 4 },
+        { "5 años", 60, 5 },
+        { "Todo", 1200, 6 }
+    }
+)
 
-Activo Seleccionado =
-SELECTEDVALUE(DashboardAssets[ticker], "Seleccione un activo")
+-- Después: Nueva medida (cada definición es independiente).
+
+Ticker Seleccionado =
+SELECTEDVALUE ( SelectorEmpresa[Ticker] )
 
 Empresa Seleccionada =
-SELECTEDVALUE(DashboardAssets[company_name], "Seleccione un activo")
+SELECTEDVALUE ( SelectorEmpresa[Empresa], "Seleccione una empresa" )
 
--- KPI de la empresa seleccionada
-Probabilidad Favorable = MAX(DashboardAssets[probability_favorable])
-Score Sentimiento = MAX(DashboardAssets[sentiment_score])
-Rentabilidad Backtesting = MAX(DashboardAssets[backtesting_return])
-Benchmark Return = MAX(DashboardAssets[benchmark_return])
-Maximum Drawdown = MAX(DashboardAssets[max_drawdown])
-Hit Rate Backtesting = MAX(DashboardAssets[hit_rate])
-Nivel Confianza Modelo = MAX(DashboardAssets[roc_auc])
-Accuracy Modelo = MAX(DashboardAssets[accuracy])
-F1 Modelo = MAX(DashboardAssets[f1_score])
-Score Final = MAX(DashboardAssets[final_score])
-Posicion Ranking = MAX(DashboardAssets[ranking_position])
-Decision Activo = MAX(DashboardAssets[decision_label])
-Noticias Analizadas = MAX(DashboardAssets[news_count])
-Precio Actual = MAX(DashboardAssets[close_price])
+Probabilidad Favorable =
+VAR T = [Ticker Seleccionado]
+RETURN IF ( ISBLANK ( T ), BLANK (),
+    CALCULATE ( MAX ( DashboardAssets[probability_favorable] ), DashboardAssets[ticker] = T ) )
 
--- Mejor activo global: ignora el slicer para que siempre represente al #1 del motor.
+Sentimiento FinBERT =
+VAR T = [Ticker Seleccionado]
+RETURN IF ( ISBLANK ( T ), BLANK (),
+    CALCULATE ( MAX ( DashboardAssets[sentiment_score] ), DashboardAssets[ticker] = T ) )
+
+Noticias Analizadas =
+VAR T = [Ticker Seleccionado]
+RETURN IF ( ISBLANK ( T ), BLANK (),
+    CALCULATE ( MAX ( DashboardAssets[news_count] ), DashboardAssets[ticker] = T ) )
+
+Rentabilidad Backtesting =
+VAR T = [Ticker Seleccionado]
+RETURN IF ( ISBLANK ( T ), BLANK (),
+    CALCULATE ( MAX ( DashboardAssets[backtesting_return] ), DashboardAssets[ticker] = T ) )
+
+Benchmark Backtesting =
+VAR T = [Ticker Seleccionado]
+RETURN IF ( ISBLANK ( T ), BLANK (),
+    CALCULATE ( MAX ( DashboardAssets[benchmark_return] ), DashboardAssets[ticker] = T ) )
+
+Drawdown Maximo =
+VAR T = [Ticker Seleccionado]
+RETURN IF ( ISBLANK ( T ), BLANK (),
+    CALCULATE ( MAX ( DashboardAssets[max_drawdown] ), DashboardAssets[ticker] = T ) )
+
+Hit Rate Backtesting =
+VAR T = [Ticker Seleccionado]
+RETURN IF ( ISBLANK ( T ), BLANK (),
+    CALCULATE ( MAX ( DashboardAssets[hit_rate] ), DashboardAssets[ticker] = T ) )
+
+ROC AUC Modelo =
+VAR T = [Ticker Seleccionado]
+RETURN IF ( ISBLANK ( T ), BLANK (),
+    CALCULATE ( MAX ( DashboardAssets[roc_auc] ), DashboardAssets[ticker] = T ) )
+
+F1 Modelo =
+VAR T = [Ticker Seleccionado]
+RETURN IF ( ISBLANK ( T ), BLANK (),
+    CALCULATE ( MAX ( DashboardAssets[f1_score] ), DashboardAssets[ticker] = T ) )
+
+Score Empresa =
+VAR T = [Ticker Seleccionado]
+RETURN IF ( ISBLANK ( T ), BLANK (),
+    100 * CALCULATE ( MAX ( DashboardAssets[final_score] ), DashboardAssets[ticker] = T ) )
+
+Posicion Ranking =
+VAR T = [Ticker Seleccionado]
+RETURN IF ( ISBLANK ( T ), BLANK (),
+    CALCULATE ( MAX ( DashboardAssets[ranking_position] ), DashboardAssets[ticker] = T ) )
+
+Decision Empresa =
+VAR T = [Ticker Seleccionado]
+RETURN IF ( ISBLANK ( T ), "Seleccione una empresa",
+    COALESCE (
+        CALCULATE ( SELECTEDVALUE ( DashboardAssets[decision_label] ), DashboardAssets[ticker] = T ),
+        "Sin decisión disponible" ) )
+
+-- Ranking: esta tabla NO recibe el filtro del slicer SelectorEmpresa.
+Puntuacion Ranking =
+100 * MAX ( DashboardAssets[final_score] )
+
+Color Ranking =
+VAR TBarra = SELECTEDVALUE ( DashboardAssets[ticker] )
+RETURN IF ( TBarra = [Ticker Seleccionado], "#1674F5", "#AABBD0" )
+
+-- Ganador del motor: SIEMPRE global, independiente del ticker seleccionado.
 Mejor Activo IA =
-CALCULATE(
-    MAX(DashboardAssets[ticker]),
-    REMOVEFILTERS(DimActivo),
-    DashboardAssets[is_best] = 1
-)
+CALCULATE ( SELECTEDVALUE ( DashboardAssets[ticker] ),
+    FILTER ( ALL ( DashboardAssets ), DashboardAssets[is_best] = 1 ) )
 
 Mejor Empresa IA =
-CALCULATE(
-    MAX(DashboardAssets[company_name]),
-    REMOVEFILTERS(DimActivo),
-    DashboardAssets[is_best] = 1
-)
+CALCULATE ( SELECTEDVALUE ( DashboardAssets[company_name] ),
+    FILTER ( ALL ( DashboardAssets ), DashboardAssets[is_best] = 1 ) )
 
 Score Mejor Activo =
-CALCULATE(
-    MAX(DashboardAssets[final_score]),
-    REMOVEFILTERS(DimActivo),
-    DashboardAssets[is_best] = 1
-)
+CALCULATE ( 100 * MAX ( DashboardAssets[final_score] ),
+    FILTER ( ALL ( DashboardAssets ), DashboardAssets[is_best] = 1 ) )
 
-Decision Mejor Activo =
-CALCULATE(
-    MAX(DashboardAssets[decision_label]),
-    REMOVEFILTERS(DimActivo),
-    DashboardAssets[is_best] = 1
-)
-
--- Gemini explica únicamente el mejor activo del mismo run.
 Comentario IA Mejor Activo =
-CALCULATE(MAX(AIRecommendation[model_comment]), REMOVEFILTERS(DimActivo))
-
-Motivo IA Mejor Activo =
-CALCULATE(MAX(AIRecommendation[main_reason]), REMOVEFILTERS(DimActivo))
-
-Comparacion IA =
-CALCULATE(MAX(AIRecommendation[comparison_comment]), REMOVEFILTERS(DimActivo))
+COALESCE ( SELECTEDVALUE ( AIRecommendation[model_comment] ),
+    "La opinión IA global todavía no está disponible." )
 
 Explicacion IA Completa =
-VAR Motivo = CALCULATE(MAX(AIRecommendation[main_reason]), REMOVEFILTERS(DimActivo))
-VAR Positivo = CALCULATE(MAX(AIRecommendation[positive_factors]), REMOVEFILTERS(DimActivo))
-VAR Riesgo = CALCULATE(MAX(AIRecommendation[risk_factors]), REMOVEFILTERS(DimActivo))
-VAR Comparacion = CALCULATE(MAX(AIRecommendation[comparison_comment]), REMOVEFILTERS(DimActivo))
-RETURN
-    "Motivo: " & COALESCE(Motivo, "Gemini todavía no generó comentario")
-    & UNICHAR(10) & UNICHAR(10)
-    & "Factores favorables: " & COALESCE(Positivo, "-")
-    & UNICHAR(10) & UNICHAR(10)
-    & "Riesgos: " & COALESCE(Riesgo, "-")
-    & UNICHAR(10) & UNICHAR(10)
-    & "Comparación: " & COALESCE(Comparacion, "-")
+VAR Motivo = SELECTEDVALUE ( AIRecommendation[main_reason] )
+VAR Positivo = SELECTEDVALUE ( AIRecommendation[positive_factors] )
+VAR Riesgo = SELECTEDVALUE ( AIRecommendation[risk_factors] )
+VAR Comparacion = SELECTEDVALUE ( AIRecommendation[comparison_comment] )
+RETURN IF ( ISBLANK ( Motivo ), "El análisis comparativo IA está pendiente.",
+    "FUNDAMENTO" & UNICHAR ( 10 ) & Motivo
+    & UNICHAR ( 10 ) & UNICHAR ( 10 )
+    & "FORTALEZAS" & UNICHAR ( 10 ) & COALESCE ( Positivo, "No disponible" )
+    & UNICHAR ( 10 ) & UNICHAR ( 10 )
+    & "RIESGOS" & UNICHAR ( 10 ) & COALESCE ( Riesgo, "No disponible" )
+    & UNICHAR ( 10 ) & UNICHAR ( 10 )
+    & "COMPARACIÓN" & UNICHAR ( 10 ) & COALESCE ( Comparacion, "No disponible" ) )
 
--- Ranking: gráfico de barras con DashboardAssets[ticker] y DashboardAssets[final_score].
--- Histórico: línea con MarketHistory[price_date] y MarketHistory[close_price], filtrado por DimActivo.
+-- Opinión Gemini individual. El modelo se generó previamente para ese run_id.
+Opinion IA Empresa Breve =
+VAR T = [Ticker Seleccionado]
+VAR Texto = CALCULATE ( SELECTEDVALUE ( CompanyOpinions[model_comment] ),
+    CompanyOpinions[ticker] = T )
+RETURN IF ( ISBLANK ( T ), "Seleccione una empresa.",
+    COALESCE ( Texto, "No hay opinión IA para esta empresa en la última ejecución." ) )
+
+Opinion IA Empresa =
+VAR T = [Ticker Seleccionado]
+VAR Resumen = CALCULATE ( SELECTEDVALUE ( CompanyOpinions[summary] ), CompanyOpinions[ticker] = T )
+VAR Fortalezas = CALCULATE ( SELECTEDVALUE ( CompanyOpinions[strengths] ), CompanyOpinions[ticker] = T )
+VAR Riesgos = CALCULATE ( SELECTEDVALUE ( CompanyOpinions[risks] ), CompanyOpinions[ticker] = T )
+RETURN IF ( ISBLANK ( T ), "Seleccione una empresa para consultar su análisis.",
+    IF ( ISBLANK ( Resumen ), "La opinión IA de esta empresa está pendiente.",
+        Resumen & UNICHAR ( 10 ) & UNICHAR ( 10 )
+        & "FORTALEZAS" & UNICHAR ( 10 ) & COALESCE ( Fortalezas, "No disponible" )
+        & UNICHAR ( 10 ) & UNICHAR ( 10 )
+        & "RIESGOS" & UNICHAR ( 10 ) & COALESCE ( Riesgos, "No disponible" ) ) )
+
+Fecha Ultimo Dato Empresa =
+VAR T = [Ticker Seleccionado]
+RETURN IF ( ISBLANK ( T ), BLANK (),
+    CALCULATE ( MAX ( MarketHistory[price_date] ),
+        REMOVEFILTERS ( MarketHistory ), MarketHistory[ticker] = T ) )
+
+-- Indice base 100, se oculta fuera del período elegido.
+Indice Precio Normalizado =
+VAR T = [Ticker Seleccionado]
+VAR M = SELECTEDVALUE ( Periodos[Meses], 12 )
+VAR Fin = [Fecha Ultimo Dato Empresa]
+VAR Inicio = IF ( M >= 1200, DATE ( 1900, 1, 1 ), EDATE ( Fin, -M ) )
+VAR Eje = MAX ( MarketHistory[price_date] )
+VAR BaseFecha = CALCULATE ( MIN ( MarketHistory[price_date] ),
+    REMOVEFILTERS ( MarketHistory ), MarketHistory[ticker] = T,
+    MarketHistory[price_date] >= Inicio, MarketHistory[price_date] <= Fin )
+VAR BasePrecio = CALCULATE ( MAX ( MarketHistory[close_price] ),
+    REMOVEFILTERS ( MarketHistory ), MarketHistory[ticker] = T,
+    MarketHistory[price_date] = BaseFecha )
+VAR Precio = CALCULATE ( MAX ( MarketHistory[close_price] ), MarketHistory[ticker] = T )
+RETURN IF ( ISBLANK ( T ) || ISBLANK ( Fin ) || ISBLANK ( Eje )
+    || Eje < Inicio || Eje > Fin,
+    BLANK (), 100 * DIVIDE ( Precio, BasePrecio ) )
+
+-- SPY es proxy del S&P 500; requiere que el ticker SPY esté en market_data.
+Indice SP500 =
+VAR M = SELECTEDVALUE ( Periodos[Meses], 12 )
+VAR Fin = [Fecha Ultimo Dato Empresa]
+VAR Inicio = IF ( M >= 1200, DATE ( 1900, 1, 1 ), EDATE ( Fin, -M ) )
+VAR Eje = MAX ( MarketHistory[price_date] )
+VAR BaseFecha = CALCULATE ( MIN ( MarketHistory[price_date] ),
+    REMOVEFILTERS ( MarketHistory ), MarketHistory[ticker] = "SPY",
+    MarketHistory[price_date] >= Inicio, MarketHistory[price_date] <= Fin )
+VAR BasePrecio = CALCULATE ( MAX ( MarketHistory[close_price] ),
+    REMOVEFILTERS ( MarketHistory ), MarketHistory[ticker] = "SPY",
+    MarketHistory[price_date] = BaseFecha )
+VAR Precio = CALCULATE ( MAX ( MarketHistory[close_price] ), MarketHistory[ticker] = "SPY" )
+RETURN IF ( ISBLANK ( Fin ) || ISBLANK ( Eje ) || Eje < Inicio || Eje > Fin,
+    BLANK (), 100 * DIVIDE ( Precio, BasePrecio ) )
+
+Rentabilidad Precio Periodo =
+VAR T = [Ticker Seleccionado]
+VAR M = SELECTEDVALUE ( Periodos[Meses], 12 )
+VAR Fin = [Fecha Ultimo Dato Empresa]
+VAR Inicio = IF ( M >= 1200, DATE ( 1900, 1, 1 ), EDATE ( Fin, -M ) )
+VAR BaseFecha = CALCULATE ( MIN ( MarketHistory[price_date] ),
+    REMOVEFILTERS ( MarketHistory ), MarketHistory[ticker] = T,
+    MarketHistory[price_date] >= Inicio, MarketHistory[price_date] <= Fin )
+VAR BasePrecio = CALCULATE ( MAX ( MarketHistory[close_price] ),
+    REMOVEFILTERS ( MarketHistory ), MarketHistory[ticker] = T,
+    MarketHistory[price_date] = BaseFecha )
+VAR FinalPrecio = CALCULATE ( MAX ( MarketHistory[close_price] ),
+    REMOVEFILTERS ( MarketHistory ), MarketHistory[ticker] = T,
+    MarketHistory[price_date] = Fin )
+RETURN IF ( ISBLANK ( T ) || ISBLANK ( Fin ), BLANK (),
+    DIVIDE ( FinalPrecio, BasePrecio ) - 1 )
+
+Fecha Actualizacion =
+CALCULATE ( MAX ( DashboardAssets[created_at] ), ALL ( DashboardAssets ) )

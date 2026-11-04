@@ -1,5 +1,17 @@
 # Sistema BI de Inversión V2 — KPI coherentes por empresa + Gemini 
 
+## Actualización V3 — Power BI con opinión individual por empresa (04/11/2026)
+
+- **Sí se mantiene Flask, MySQL, XGBoost, FinBERT y Gemini.** No cambia la arquitectura de despliegue.
+- El pipeline ahora ejecuta `jobs.run_company_opinions` dentro de `main()`, después de la opinión global y antes de cerrar `run_id`. Se corrigió el error de alcance `notes is not defined`.
+- Nueva tabla `ai_asset_opinion` (una fila por `run_id` y `ticker`) y endpoint `/api/dashboard/company-opinions`.
+- Power BI importa cuatro consultas principales: `DashboardAssets`, `AIRecommendation`, `CompanyOpinions`, `MarketHistory`. El archivo `powerbi/Measures.dax` fue sustituido por fórmulas interactivas V3.
+- Los filtros desconectados `SelectorEmpresa` y `Periodos` permiten actualizar tarjetas/histórico/opinión individual manteniendo el ranking global completo.
+- `BENCHMARK_TICKER=SPY` carga por separado el histórico de referencia si SPY no compite en `TICKERS`, sin alterar el ganador ni el número de empresas del ranking.
+- **El selector de período afecta a la curva histórica**, no al horizonte XGBoost. La opinión IA es una explicación ya generada para el run; seleccionar otra empresa no ejecuta Gemini de nuevo.
+- Instrucciones de construcción de la página y formato exacto en `powerbi/README.txt`. Validación estática en `tests/test_powerbi_integration.py`; requiere pruebas adicionales con Railway y Power BI Desktop.
+
+
 Esta versión corrige el problema de Power BI donde **Mejor activo**, **Ranking**, **Sentimiento**, **Backtesting** y otros KPI podían provenir de tickers o ejecuciones diferentes.
 
 ## Cambio principal

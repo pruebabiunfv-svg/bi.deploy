@@ -49,6 +49,7 @@ MYSQLPORT=3306
 MYSQLUSER=root
 MYSQLPASSWORD=${{MySQL.MYSQL_ROOT_PASSWORD}}
 TICKERS=AAPL,MSFT,NVDA,AMZN,GOOGL,SPY,QQQ
+BENCHMARK_TICKER=SPY
 MARKET_PERIOD=10y
 PREDICTION_HORIZON_DAYS=126
 NEWS_PER_TICKER=25
@@ -74,7 +75,8 @@ GEMINI_MODEL=gemini-3.8-flash
 7. Construye `asset_kpi_snapshot`, una fila por empresa.
 8. Recalcula ranking por `final_score`.
 9. Gemini explica solamente `is_best=1` comparándolo con los demás.
-10. Cierra el run como `COMPLETED` o `COMPLETED_WITH_WARNINGS`.
+10. Gemini genera además una opinión para cada empresa y la guarda en `ai_asset_opinion`.
+11. Cierra el run como `COMPLETED` o `COMPLETED_WITH_WARNINGS`.
 
 ## Power BI
 
@@ -82,7 +84,21 @@ Usar:
 
 - `/api/dashboard/assets`
 - `/api/dashboard/recommendation`
+- `/api/dashboard/company-opinions`
 - `/api/market-history`
 - `/api/dashboard/runs` (opcional)
 
 Con `PUBLIC_ANALYTICS=true`: autenticación **Anónimo**.
+
+### Actualización V3
+
+El nuevo endpoint aparece en el listado de `/` y devuelve una fila por ticker del
+último `run_id` completado. Tras desplegar el nuevo código, **ejecute el worker**;
+publicar Flask por sí solo no genera opiniones. Luego actualice Power BI.
+Si el endpoint responde `[]` pero `/api/dashboard/assets` tiene filas, compruebe
+`GEMINI_API_KEY`, `GEMINI_MODEL`, los logs del worker y la cuota disponible.
+
+Para el informe Power BI use únicamente las consultas/medidas V3 de `powerbi/README.txt`.
+Si desea las siete acciones de la imagen sin ETFs en el ranking, configure
+`TICKERS=GOOGL,AMZN,AAPL,NVDA,META,MSFT,TSLA` y deje `BENCHMARK_TICKER=SPY`:
+SPY se carga solo como serie de referencia y no compite en el ranking.

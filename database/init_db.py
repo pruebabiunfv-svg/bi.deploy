@@ -12,6 +12,8 @@ COMPANY_NAMES = {
     "NVDA": "NVIDIA Corporation",
     "AMZN": "Amazon.com, Inc.",
     "GOOGL": "Alphabet Inc.",
+    "META": "Meta Platforms, Inc.",
+    "TSLA": "Tesla, Inc.",
     "SPY": "SPDR S&P 500 ETF Trust",
     "QQQ": "Invesco QQQ Trust",
 }

@@ -1,18 +1,26 @@
 let
-    BaseUrl = "https://TU-API.up.railway.app",
+    // Cambie el dominio si el despliegue de Railway tiene otra URL.
+    BaseUrl = "https://bideploy-production.up.railway.app",
     Source = Json.Document(Web.Contents(BaseUrl, [RelativePath="api/market-history"])),
-    Tabla = Table.FromRecords(Source),
-    Fecha = Table.TransformColumns(Tabla,{
-        {"price_date", each if _ = null then null else Date.FromText(Text.Start(Text.From(_),10), [Format="yyyy-MM-dd", Culture="en-US"]), type date}
+    Tabla = if List.IsEmpty(Source) then
+        #table({"ticker", "price_date", "close_price", "volume", "source"}, {})
+    else
+        Table.FromRecords(Source),
+    Seleccion = Table.SelectColumns(
+        Tabla,
+        {"ticker", "price_date", "close_price", "volume", "source"},
+        MissingField.UseNull
+    ),
+    Fechas = Table.TransformColumns(Seleccion, {
+        {"price_date", each if _ = null then null else
+            Date.FromText(Text.Start(Text.From(_), 10),
+                [Format="yyyy-MM-dd", Culture="en-US"]), type date}
     }),
-    Tipos = Table.TransformColumnTypes(Fecha,{
+    Tipos = Table.TransformColumnTypes(Fechas, {
         {"ticker", type text},
-        {"open_price", type number},
-        {"high_price", type number},
-        {"low_price", type number},
         {"close_price", type number},
         {"volume", Int64.Type},
         {"source", type text}
-    })
+    }, "en-US")
 in
     Tipos

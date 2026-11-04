@@ -1,0 +1,15 @@
+{
+  "name": "Inversion IA - Azul y Blanco",
+  "dataColors": [
+    "#1879F9",
+    "#18B983",
+    "#FFBD48",
+    "#9056E8",
+    "#AABCD4",
+    "#E65067",
+    "#5C8DD6"
+  ],
+  "background": "#EFF5FC",
+  "foreground": "#11284B",
+  "tableAccent": "#1674F5"
+}

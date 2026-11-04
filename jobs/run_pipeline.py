@@ -20,6 +20,7 @@ TICKERS = [
     if x.strip()
 ]
 MARKET_PERIOD = os.getenv("MARKET_PERIOD", "10y")
+BENCHMARK_TICKER = os.getenv("BENCHMARK_TICKER", "SPY").strip().upper()
 HORIZON = int(os.getenv("PREDICTION_HORIZON_DAYS", "126"))
 FRED_KEY = os.getenv("FRED_API_KEY", "")
 SEC_UA = os.getenv("SEC_USER_AGENT", "BusinessAnalytics/1.0 contact@example.com")
@@ -34,6 +35,8 @@ CIK = {
     "NVDA": "0001045810",
     "AMZN": "0001018724",
     "GOOGL": "0001652044",
+    "META": "0001326801",
+    "TSLA": "0001318605",
 }
 
 
@@ -43,6 +46,8 @@ COMPANY_NAMES = {
     "NVDA": "NVIDIA Corporation",
     "AMZN": "Amazon.com, Inc.",
     "GOOGL": "Alphabet Inc.",
+    "META": "Meta Platforms, Inc.",
+    "TSLA": "Tesla, Inc.",
     "SPY": "SPDR S&P 500 ETF Trust",
     "QQQ": "Invesco QQQ Trust",
 }
@@ -53,6 +58,8 @@ COMPANY_QUERY = {
     "NVDA": "NVIDIA",
     "AMZN": "Amazon",
     "GOOGL": "Alphabet Google",
+    "META": "Meta Platforms",
+    "TSLA": "Tesla",
     "SPY": "S&P 500",
     "QQQ": "Nasdaq 100",
 }
@@ -779,6 +786,15 @@ def main():
             except Exception as exc:
                 notes.append(f"Yahoo {ticker}: {exc}")
                 print(f"Yahoo {ticker} ERROR: {exc}")
+
+        # Histórico de referencia para la línea normalizada del S&P 500 en Power BI.
+        # No participa en el ranking si no está incluido explícitamente en TICKERS.
+        if BENCHMARK_TICKER and BENCHMARK_TICKER not in TICKERS:
+            try:
+                load_yahoo(BENCHMARK_TICKER)
+            except Exception as exc:
+                notes.append(f"Yahoo benchmark {BENCHMARK_TICKER}: {exc}")
+                print(f"Yahoo benchmark {BENCHMARK_TICKER} ERROR: {exc}")
 
         try:
             load_fred()
