@@ -1,0 +1,328 @@
+-- EJECUTAR CADA DEFINICION POR SEPARADO EN: Modelado > Nueva tabla / Nueva medida.
+-- Primero crear esta tabla SIN RELACIONES:
+
+Periodos =
+DATATABLE(
+    "Periodo", STRING,
+    "Meses", INTEGER,
+    "Orden", INTEGER,
+    {
+        {"6 meses", 6, 1},
+        {"1 año", 12, 2},
+        {"3 años", 36, 3},
+        {"5 años", 60, 4},
+        {"10 años", 120, 5},
+        {"Todo el histórico", -1, 6}
+    }
+)
+
+-- Ordenar Periodos[Periodo] por Periodos[Orden].
+-- Mostrar Periodos[Periodo] en segmentador, con selección única.
+
+-- =========================================================
+-- 1. TARJETAS DEL MODELO (último snapshot; NO cambian por período)
+-- =========================================================
+
+Puntuación final =
+MAX(Activos[final_score]) * 100
+
+Probabilidad favorable =
+MAX(Activos[probability_favorable])
+
+Tasa de acierto backtest =
+MAX(Activos[hit_rate])
+
+Sentimiento FinBERT =
+IF(
+    COALESCE(MAX(Activos[news_count]), 0) = 0,
+    BLANK(),
+    MAX(Activos[sentiment_score])
+)
+
+Sentimiento FinBERT texto =
+VAR Valor = [Sentimiento FinBERT]
+RETURN IF(
+    ISBLANK(Valor),
+    "Sin noticias analizadas",
+    FORMAT(Valor, "+0.00;-0.00;0.00")
+)
+
+Rentabilidad backtest =
+MAX(Activos[backtesting_return])
+
+Drawdown máximo backtest =
+-ABS(MAX(Activos[max_drawdown]))
+
+Exactitud modelo =
+MAX(Activos[accuracy])
+
+AUC modelo =
+MAX(Activos[roc_auc])
+
+Ranking puntuación =
+MAX(Activos[final_score]) * 100
+
+-- =========================================================
+-- 2. PERIODO SELECCIONADO Y DISPONIBILIDAD HISTORICA
+-- =========================================================
+
+Fecha fin disponible =
+CALCULATE(
+    MAX(Precios[price_date]),
+    REMOVEFILTERS(Activos),
+    REMOVEFILTERS(Precios)
+)
+
+Fecha inicio solicitada =
+VAR Meses = SELECTEDVALUE(Periodos[Meses], 12)
+VAR Fin = [Fecha fin disponible]
+RETURN IF(Meses = -1, DATE(1900, 1, 1), EDATE(Fin, -Meses))
+
+Dentro del período =
+VAR FechaEje = MAX(Precios[price_date])
+RETURN IF(
+    FechaEje >= [Fecha inicio solicitada]
+        && FechaEje <= [Fecha fin disponible],
+    1,
+    0
+)
+
+Fecha base empresa =
+VAR Tk = SELECTEDVALUE(Activos[ticker])
+VAR Inicio = [Fecha inicio solicitada]
+VAR Fin = [Fecha fin disponible]
+RETURN IF(
+    ISBLANK(Tk),
+    BLANK(),
+    CALCULATE(
+        MIN(Precios[price_date]),
+        REMOVEFILTERS(Precios[price_date]),
+        Precios[ticker] = Tk,
+        FILTER(
+            ALL(Precios[price_date]),
+            Precios[price_date] >= Inicio
+                && Precios[price_date] <= Fin
+        )
+    )
+)
+
+Fecha base SPY =
+VAR Inicio = [Fecha inicio solicitada]
+VAR Fin = [Fecha fin disponible]
+RETURN
+CALCULATE(
+    MIN(Precios[price_date]),
+    REMOVEFILTERS(Activos),
+    REMOVEFILTERS(Precios[price_date]),
+    Precios[ticker] = "SPY",
+    FILTER(
+        ALL(Precios[price_date]),
+        Precios[price_date] >= Inicio
+            && Precios[price_date] <= Fin
+    )
+)
+
+Cobertura histórica real =
+VAR Primera = [Fecha base empresa]
+VAR Ultima = [Fecha fin disponible]
+RETURN IF(
+    ISBLANK(Primera),
+    "Seleccione una empresa",
+    "Precios: " & FORMAT(Primera, "dd/MM/yyyy")
+        & " - " & FORMAT(Ultima, "dd/MM/yyyy")
+)
+
+-- =========================================================
+-- 3. EVOLUCION NORMALIZADA, COMPARABLE BASE 100
+-- =========================================================
+
+Precio base empresa =
+VAR Tk = SELECTEDVALUE(Activos[ticker])
+VAR FechaBase = [Fecha base empresa]
+RETURN IF(
+    ISBLANK(Tk) || ISBLANK(FechaBase),
+    BLANK(),
+    CALCULATE(
+        MAX(Precios[close_price]),
+        REMOVEFILTERS(Precios[price_date]),
+        Precios[ticker] = Tk,
+        Precios[price_date] = FechaBase
+    )
+)
+
+Precio base SPY =
+VAR FechaBase = [Fecha base SPY]
+RETURN IF(
+    ISBLANK(FechaBase),
+    BLANK(),
+    CALCULATE(
+        MAX(Precios[close_price]),
+        REMOVEFILTERS(Activos),
+        REMOVEFILTERS(Precios[price_date]),
+        Precios[ticker] = "SPY",
+        Precios[price_date] = FechaBase
+    )
+)
+
+Evolución empresa (base 100) =
+VAR Tk = SELECTEDVALUE(Activos[ticker])
+VAR FechaGrafico = MAX(Precios[price_date])
+VAR FechaBase = [Fecha base empresa]
+VAR Precio =
+    CALCULATE(MAX(Precios[close_price]), Precios[ticker] = Tk)
+RETURN IF(
+    NOT ISBLANK(Tk)
+        && NOT ISBLANK(FechaBase)
+        && FechaGrafico >= FechaBase
+        && FechaGrafico <= [Fecha fin disponible]
+        && NOT ISBLANK(Precio),
+    DIVIDE(Precio, [Precio base empresa]) * 100,
+    BLANK()
+)
+
+Evolución SPY (base 100) =
+VAR FechaGrafico = MAX(Precios[price_date])
+VAR FechaBase = [Fecha base SPY]
+VAR Precio =
+    CALCULATE(
+        MAX(Precios[close_price]),
+        REMOVEFILTERS(Activos),
+        Precios[ticker] = "SPY"
+    )
+RETURN IF(
+    NOT ISBLANK(FechaBase)
+        && FechaGrafico >= FechaBase
+        && FechaGrafico <= [Fecha fin disponible]
+        && NOT ISBLANK(Precio),
+    DIVIDE(Precio, [Precio base SPY]) * 100,
+    BLANK()
+)
+
+-- =========================================================
+-- 4. RENTABILIDAD Y DRAWDOWN POR VENTANA HISTORICA
+-- =========================================================
+
+Precio final empresa =
+VAR Tk = SELECTEDVALUE(Activos[ticker])
+VAR Fin = [Fecha fin disponible]
+VAR UltimaFecha =
+    CALCULATE(
+        MAX(Precios[price_date]),
+        REMOVEFILTERS(Precios[price_date]),
+        Precios[ticker] = Tk,
+        FILTER(ALL(Precios[price_date]), Precios[price_date] <= Fin)
+    )
+RETURN IF(
+    ISBLANK(Tk) || ISBLANK(UltimaFecha),
+    BLANK(),
+    CALCULATE(
+        MAX(Precios[close_price]),
+        REMOVEFILTERS(Precios[price_date]),
+        Precios[ticker] = Tk,
+        Precios[price_date] = UltimaFecha
+    )
+)
+
+Rentabilidad histórica período =
+VAR Factor = DIVIDE([Precio final empresa], [Precio base empresa])
+RETURN IF(ISBLANK(Factor), BLANK(), Factor - 1)
+
+Precio final SPY =
+VAR Fin = [Fecha fin disponible]
+VAR UltimaFecha =
+    CALCULATE(
+        MAX(Precios[price_date]),
+        REMOVEFILTERS(Activos),
+        REMOVEFILTERS(Precios[price_date]),
+        Precios[ticker] = "SPY",
+        FILTER(ALL(Precios[price_date]), Precios[price_date] <= Fin)
+    )
+RETURN IF(
+    ISBLANK(UltimaFecha),
+    BLANK(),
+    CALCULATE(
+        MAX(Precios[close_price]),
+        REMOVEFILTERS(Activos),
+        REMOVEFILTERS(Precios[price_date]),
+        Precios[ticker] = "SPY",
+        Precios[price_date] = UltimaFecha
+    )
+)
+
+Rentabilidad SPY período =
+VAR Factor = DIVIDE([Precio final SPY], [Precio base SPY])
+RETURN IF(ISBLANK(Factor), BLANK(), Factor - 1)
+
+Diferencia contra SPY (pp) =
+VAR Empresa = [Rentabilidad histórica período]
+VAR Referencia = [Rentabilidad SPY período]
+RETURN IF(
+    ISBLANK(Empresa) || ISBLANK(Referencia),
+    BLANK(),
+    (Empresa - Referencia) * 100
+)
+
+Drawdown máximo período =
+VAR Tk = SELECTEDVALUE(Activos[ticker])
+VAR Inicio = [Fecha inicio solicitada]
+VAR Fin = [Fecha fin disponible]
+VAR Serie =
+    CALCULATETABLE(
+        SELECTCOLUMNS(
+            Precios,
+            "Fecha", Precios[price_date],
+            "Cierre", Precios[close_price]
+        ),
+        REMOVEFILTERS(Precios[price_date]),
+        Precios[ticker] = Tk,
+        FILTER(
+            ALL(Precios[price_date]),
+            Precios[price_date] >= Inicio
+                && Precios[price_date] <= Fin
+        )
+    )
+RETURN IF(
+    ISBLANK(Tk) || COUNTROWS(Serie) < 2,
+    BLANK(),
+    MINX(
+        Serie,
+        VAR FechaActual = [Fecha]
+        VAR PrecioActual = [Cierre]
+        VAR PicoPrevio = MAXX(FILTER(Serie, [Fecha] <= FechaActual), [Cierre])
+        RETURN DIVIDE(PrecioActual, PicoPrevio) - 1
+    )
+)
+
+-- =========================================================
+-- 5. TARJETAS DE INTELIGENCIA ARTIFICIAL
+-- =========================================================
+
+IA análisis de empresa =
+SELECTEDVALUE(OpinionesIA[model_comment], "Seleccione una empresa")
+
+IA fortalezas =
+SELECTEDVALUE(OpinionesIA[strengths], "No disponible")
+
+IA riesgos =
+SELECTEDVALUE(OpinionesIA[risks], "No disponible")
+
+IA análisis comparativo =
+SELECTEDVALUE(RecomendacionIA[comparison_comment], "No disponible")
+
+IA recomendación general =
+SELECTEDVALUE(RecomendacionIA[summary], "No disponible")
+
+Última ejecución =
+MAX(Corridas[completed_at])
+
+Estado del modelo =
+SELECTEDVALUE(EstadoAPI[latest_run_status], "Sin estado")
+
+-- FORMATO DE MEDIDAS EN POWER BI:
+-- Puntuación final, Ranking puntuación       : número decimal, 2 decimales
+-- Probabilidad favorable, Tasa acierto       : porcentaje, 1 decimal
+-- Rentabilidad histórica período, SPY, backtest: porcentaje, 2 decimales
+-- Drawdown máximo período, backtest          : porcentaje, 2 decimales
+-- Exactitud modelo, AUC modelo               : porcentaje, 1 decimal
+-- Diferencia contra SPY (pp)                 : número decimal, 2 decimales
+-- Sentimiento FinBERT                        : número decimal, 2 decimales
