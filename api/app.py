@@ -231,7 +231,7 @@ def sentiment():
                AVG(negative_score) AS negative_score,
                COUNT(*) AS news_count
         FROM sentiment
-        WHERE created_at >= NOW() - INTERVAL 30 MONTH
+        WHERE created_at >= NOW() - INTERVAL 3 MONTH
         GROUP BY ticker
         ORDER BY sentiment_score DESC
         """
