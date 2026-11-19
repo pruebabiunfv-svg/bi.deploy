@@ -26,7 +26,7 @@ def get_assets_for_run(run_id):
     LEFT JOIN (
         SELECT ticker, AVG(sentiment_score) AS sentiment_score
         FROM sentiment
-        WHERE created_at >= NOW() - INTERVAL 30 MONTH
+        WHERE created_at >= NOW() - INTERVAL 3 MONTH
         GROUP BY ticker
     ) s ON s.ticker=p.ticker
     LEFT JOIN asset_ranking r ON r.id=(
