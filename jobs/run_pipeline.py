@@ -442,7 +442,7 @@ def train_predict_xgb(ticker):
             rows = cur.fetchall()
             cur.execute(
                 "SELECT AVG(sentiment_score) AS s FROM sentiment "
-                "WHERE ticker=%s AND created_at >= NOW() - INTERVAL 30 DAY",
+                "WHERE ticker=%s AND created_at >= NOW() - INTERVAL 3 MONTH",
                 (ticker,),
             )
             sentiment_row = cur.fetchone()
