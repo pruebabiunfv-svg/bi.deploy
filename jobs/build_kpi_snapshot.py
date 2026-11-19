@@ -47,7 +47,7 @@ def build_snapshot(run_id):
                            AVG(negative_score) AS negative_score,
                            COUNT(*) AS news_count
                     FROM sentiment
-                    WHERE created_at >= NOW() - INTERVAL 30 DAY
+                    WHERE created_at >= NOW() - INTERVAL 30 MONTH
                     GROUP BY ticker
                 ) s ON s.ticker=a.ticker
                 LEFT JOIN backtesting b
